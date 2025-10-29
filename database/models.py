@@ -40,7 +40,7 @@ class RequestsLog(Base):
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     user_id = Column(Integer, ForeignKey('user.id', ondelete='RESTRICT'), nullable=False)
-    request = Column(TEXT(1000), nullable=False)
+    request = Column(TEXT(5000), nullable=False)
     message_id = Column(BIGINT)
     created_at = Column(DateTime)
 

@@ -11,6 +11,7 @@ from aiogram import Bot
 from aiogram.types import Message
 from sqlalchemy import select
 from aiohttp import ClientSession
+import time
 
 from database.db import async_session_maker, connection
 from database.models import DomainCounter
@@ -19,6 +20,30 @@ from database.models import DomainCounter
 statistic = namedtuple('Statistic', [
     'raw_url', 'visits', 'users', 'pageViews', 'pageDepth', 'visitDuration', 'bounceRate', 'newUsers'],
                        defaults=[0 for _ in range(8)])
+
+
+class YandexMetrikaRateLimiter:
+    def __init__(self, max_requests_per_second: int = 5):
+        self.max_requests_per_second = max_requests_per_second
+        self.min_interval = 1.0 / max_requests_per_second
+        self.last_request_time = 0
+        self.lock = asyncio.Lock()
+
+    async def acquire(self):
+        """Ожидает разрешения на выполнение запроса"""
+        async with self.lock:
+            current_time = time.time()
+            time_since_last = current_time - self.last_request_time
+
+            if time_since_last < self.min_interval:
+                wait_time = self.min_interval - time_since_last
+                await asyncio.sleep(wait_time)
+
+            self.last_request_time = time.time()
+
+
+# Глобальный лимитер для всего приложения
+metrika_limiter = YandexMetrikaRateLimiter(max_requests_per_second=5)
 
 
 class YMRequest:
@@ -55,14 +80,14 @@ class YMRequest:
         return stat
 
     async def get_statistics(self, session, raw_url, cleaned_url, date1='2021-04-12', date2=datetime.date.today()):
-        await asyncio.sleep(1)
+        await metrika_limiter.acquire()
         counter_id = await self._get_counter(raw_url)
         parameters = {
             'id': counter_id,
             'metrics': 'ym:s:visits,ym:s:users,ym:s:pageviews,ym:s:pageDepth,ym:s:avgVisitDurationSeconds,ym:s:bounceRate,ym:s:percentNewVisitors',
             'filters': f"EXISTS(ym:pv:URL=*'*{cleaned_url}*')",
-            'date1': '2021-04-12',
-            'date2': '2025-09-30',
+            'date1': date1,
+            'date2': str(date2),
             'accuracy': 'full'
         }
         # stat = requests.get(self.api_url, headers=self.headers, params=parameters)
@@ -89,12 +114,13 @@ class YMRequest:
         counters = await self._get_counters(raw_urls)
         counter_ids = ','.join(counters)
         filters = ' OR '.join([f"EXISTS(ym:pv:URL=*'*{cleaned_url}*')" for cleaned_url in cleaned_urls])
+        print(filters)
         parameters = {
             'ids': counter_ids,
             'metrics': 'ym:s:visits,ym:s:users,ym:s:pageviews,ym:s:pageDepth,ym:s:avgVisitDurationSeconds,ym:s:bounceRate,ym:s:percentNewVisitors',
             'filters': filters,
             'date1': date1,
-            'date2': date2,
+            'date2': str(date2),
             'accuracy': 'full'
         }
         stat = requests.get(self.api_url, headers=self.headers, params=parameters)

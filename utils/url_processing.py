@@ -8,11 +8,22 @@ class IncorrectUrl(Exception):
         self.default_correct_message = 'Пример корректного URL: https://um.mos.ru/quizzes/kvest-kosmonavtiki/'
 
     def __str__(self):
-        return self.message + '\n' + self.default_correct_message
+        return self.message + '\n\n' + self.default_correct_message
+
+
+class MaxCountUrlError(Exception):
+    def __init__(self):
+        self.message = 'Превышено максимально допустимое количество обрабатываемых URL.' \
+                       '\n\n<u>Максимально допустимое количесво URL за один запрос = 20</u>.'
+
+    def __str__(self):
+        return self.message
 
 
 async def extract_urls_from_message(text: str) -> dict:
     url_list = re.sub(r'[ ,\n]', ' ', text).split()
+    if len(url_list) > 20:
+        raise MaxCountUrlError
     raw_processed_urls = urls_processing(url_list)
     return raw_processed_urls
 

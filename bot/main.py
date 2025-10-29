@@ -12,7 +12,7 @@ from aiohttp import ClientSession
 from sqlalchemy import select, insert
 
 from utils.ym_api import YMRequest
-from utils.url_processing import urls_processing, IncorrectUrl, extract_urls_from_message
+from utils.url_processing import urls_processing, IncorrectUrl, extract_urls_from_message, MaxCountUrlError
 from settings import tg_token, ym_token
 from database.db import async_session_maker
 from database.models import User, RequestsLog
@@ -116,7 +116,9 @@ async def start_handler(message: Message):
     await message.answer(
         "Привет! Я выдаю статистику посещаемости для URL-адреса(ов). URL-адреса можно вводить по одному или сразу несколько.\n" \
         "\nПри вводе нескольких URL в качестве разделителей допустимо использовать: " \
-        "многострочный ввод (каждый новый URL начинается с новой строки), проблелы или запятые. "
+        "многострочный ввод (каждый новый URL начинается с новой строки), проблелы или запятые. " \
+        "\n\n <u>Внимание!</u> При вводе нескольких URL одновременно допускается не более 20 URL в сообщении!",
+        parse_mode='html'
     )
 
 
@@ -141,6 +143,7 @@ async def get_message(message: Message):
     keyboard = InlineKeyboardMarkup(inline_keyboard=[[button_1]])
     await message.answer('Задайте временной интервал сбора статистики:', reply_markup=keyboard)
 
+
 @dp.callback_query(F.data == 'date_from-date_to')
 async def state_from_to(callback: CallbackQuery):
     pass
@@ -161,8 +164,8 @@ async def stat_all_time(callback: CallbackQuery):
 
         ym_request = YMRequest(ym_token)
 
-        progress_msg = await callback.message.answer(f'Получено <u><b>{len(raw_processed_urls)}</b></u> URL-адресов. Сбор статистики...', parse_mode='html')
-
+        progress_msg = await callback.message.answer(
+            f'Получено <u><b>{len(raw_processed_urls)}</b></u> URL-адресов. Сбор статистики...', parse_mode='html')
 
         async with ClientSession() as session:
             tasks = [ym_request.get_statistics(session, raw_url, raw_processed_urls[raw_url]) for
@@ -182,12 +185,18 @@ async def stat_all_time(callback: CallbackQuery):
         xlsx_writter(result, filename, sum_stat_for_url)
         await progress_msg.delete()
         await bot.send_document(chat_id=callback.message.chat.id, document=FSInputFile(f'../{filename}'),
-                                caption=f'Обработка завершена успешно!\n\nОбработано <u><b>{len(raw_processed_urls)}</b></u> URL-адресов.', parse_mode='html')
+                                caption=f'Обработка завершена успешно!\n\nОбработано <u><b>{len(raw_processed_urls)}</b></u> URL-адресов.',
+                                parse_mode='html')
     except IncorrectUrl as err:
-        await message.answer(str(err))
+        await callback.message.delete()
+        await callback.message.answer(str(err))
     except NotAccesUserError as err:
         print('ошибка доступа', err)
-        await message.answer(str(err))
+        await callback.message.delete()
+        await callback.message.answer(str(err))
+    except MaxCountUrlError as err:
+        await callback.message.delete()
+        await callback.message.answer(str(err), parse_mode='html')
 
 
 @dp.message()
