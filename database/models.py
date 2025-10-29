@@ -1,5 +1,9 @@
 from sqlalchemy import Column, Integer, Boolean, DateTime, ForeignKey, BIGINT, TEXT, ARRAY
-from database.db import Base
+from database.db import Base, async_session_maker
+
+from sqlalchemy import select
+
+import asyncio
 
 
 class DomainCounter(Base):
@@ -37,4 +41,6 @@ class RequestsLog(Base):
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     user_id = Column(Integer, ForeignKey('user.id', ondelete='RESTRICT'), nullable=False)
     request = Column(TEXT(1000), nullable=False)
+    message_id = Column(BIGINT)
     created_at = Column(DateTime)
+

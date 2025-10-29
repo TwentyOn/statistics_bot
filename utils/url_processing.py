@@ -1,3 +1,4 @@
+import re
 from urllib.parse import urlparse
 
 
@@ -10,16 +11,28 @@ class IncorrectUrl(Exception):
         return self.message + '\n' + self.default_correct_message
 
 
-def urls_procissing(raw_urls):
-    result = []
+async def extract_urls_from_message(text: str) -> dict:
+    url_list = re.sub(r'[ ,\n]', ' ', text).split()
+    raw_processed_urls = urls_processing(url_list)
+    return raw_processed_urls
+
+
+def urls_processing(raw_urls: list) -> dict:
+    processed_urls = []
+
     for raw_url in raw_urls:
         parse_url = urlparse(raw_url)
         scheme, netloc, path = parse_url.scheme, parse_url.netloc, parse_url.path
-        print(scheme, netloc, path)
+
         if not all((scheme, netloc, path)):
-            raise IncorrectUrl(f'Получен некорректный url-адрес: {raw_url}')
+            raise IncorrectUrl(f'Найден некорректный url-адрес: {raw_url}')
+
         process_url = netloc + path
         if not process_url.endswith('/'):
             process_url += '/'
-        result.append(process_url)
-    return result
+
+        processed_urls.append(process_url)
+
+    raw_processed_urls = dict(zip(raw_urls, processed_urls))
+
+    return raw_processed_urls
