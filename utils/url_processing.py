@@ -12,9 +12,10 @@ class IncorrectUrl(Exception):
 
 
 class MaxCountUrlError(Exception):
-    def __init__(self):
-        self.message = 'Превышено максимально допустимое количество обрабатываемых URL.' \
-                       '\n\n<u>Максимально допустимое количесво URL за один запрос = 20</u>.'
+    def __init__(self, url_count):
+        self.url_count = url_count
+        self.message = f'Превышено максимально допустимое количество одновременно обрабатываемых URL.' \
+                       f'\n\n<u>Максимально допустимое количесво URL за один запрос = 20. Получено {self.url_count}</u>.'
 
     def __str__(self):
         return self.message
@@ -29,7 +30,7 @@ class BadRequestError(Exception):
 async def extract_urls_from_message(text: str) -> dict:
     url_list = re.sub(r'[ ,\n]', ' ', text).split()
     if len(url_list) > 20:
-        raise MaxCountUrlError
+        raise MaxCountUrlError(len(url_list))
     raw_processed_urls = urls_processing(url_list)
     if not raw_processed_urls:
         raise BadRequestError
@@ -44,7 +45,7 @@ def urls_processing(raw_urls: list) -> dict:
         scheme, netloc, path = parse_url.scheme, parse_url.netloc, parse_url.path
 
         if not all((scheme, netloc, path)):
-            raise IncorrectUrl(f'Найден некорректный url-адрес: {raw_url}')
+            raise IncorrectUrl(f'Получен некорректный url-адрес: {raw_url}')
 
         process_url = netloc + path
         if not process_url.endswith('/'):

@@ -41,13 +41,10 @@ def xlsx_writter(statistics, filename: str, sum_stat, header):
         worksheet.write(row, 8, row_stat.newUsers / 100, percent_format)
 
     # Запись итогов
-    print('суммарная стата', sum_stat)
     # № строки для записи итогов (+2 строки с учетом заголовков)
     itog_row = len(statistics) + 2
-    print('itog_row', itog_row)
     worksheet.merge_range(f'A{itog_row + 1}:B{itog_row + 1}', 'ИТОГО',
                           worksheet.workbook_add_format({'bold': True, 'align': 'center', 'border': 1}))
-    # worksheet.write(itog_row, 0, 'Итого', workbook.add_format({'bold': True, 'border': 2, 'align': 'center'}))
     worksheet.write(itog_row, 1, '', default_format)
     worksheet.write(itog_row, 2, sum_stat.visits, default_format)
     worksheet.write(itog_row, 3, sum_stat.users, default_format)

@@ -21,6 +21,7 @@ from database.models import User, RequestsLog
 from utils.ym_api import statistic
 from utils.xlsx_file_formatter import xlsx_writter
 from sqlalchemy.ext.asyncio import AsyncSession
+from aiohttp.client_exceptions import ClientResponseError
 
 bot = Bot(token=tg_token)
 dp = Dispatcher()
@@ -28,7 +29,8 @@ dp = Dispatcher()
 
 class States(StatesGroup):
     waiting_urls = State()
-    waiting_dates = State()
+    waiting_two_dates = State()
+    waiting_one_date = State()
 
 
 class NotAccesUserError(Exception):
@@ -46,8 +48,6 @@ async def check_user(user_tg_id):
     return result.scalar()
 
 
-
-
 @dp.message(Command('start'))
 async def start_handler(message: Message):
     await message.answer(
@@ -59,8 +59,26 @@ async def start_handler(message: Message):
     )
 
 
-@dp.message(States.waiting_dates)
-async def get_dates(message: Message, state: FSMContext):
+@dp.message(States.waiting_one_date)
+async def get_one_date(message: Message, state: FSMContext):
+    format = '%d.%m.%Y'
+    try:
+        date1 = datetime.datetime.strptime(message.text, format)
+        date1 = date1.date()
+        date2 = datetime.date.today()
+        raw_processing_urls = await state.get_data()
+        raw_processing_urls = raw_processing_urls.get('user_request')
+        header = f'Статистика за период с {date1.strftime("%d.%m.%Y")} по {date2.strftime("%d.%m.%Y")}'
+        async with ClientSession() as http_client_session:
+            await request_processing(raw_processed_urls=raw_processing_urls, http_request_session=http_client_session,
+                                     date1=str(date1), date2=str(date2), header=header, message=message)
+        await state.clear()
+    except ValueError:
+        await message.answer('Некорректный формат даты')
+
+
+@dp.message(States.waiting_two_dates)
+async def get_two_dates(message: Message, state: FSMContext):
     format = '%d.%m.%Y'
     try:
         date1, date2 = message.text.split('-')
@@ -72,35 +90,81 @@ async def get_dates(message: Message, state: FSMContext):
         async with ClientSession() as http_client_session:
             await request_processing(raw_processed_urls=raw_processed_urls, http_request_session=http_client_session,
                                      date1=str(date1), date2=str(date2), header=header, message=message)
-        await state.set_state(None)
+        await state.clear()
     except ValueError:
         await message.answer('Некорректный формат даты.')
 
 
 @dp.message(F.text)
 async def get_message(message: Message, state: FSMContext):
-    user = await check_user(message.from_user.id)
-    # если пользователя нет в БД, не берем его запрос в обработку
-    if not bool(user):
-        err_msg = f'К сожалению, у вас нет доступа к этому боту. Пожалуйста, обратитесь к администратору @antoxaSV'
-        raise NotAccesUserError(err_msg)
+    try:
+        user = await check_user(message.from_user.id)
+        # если пользователя нет в БД, не берем его запрос в обработку
+        if not bool(user):
+            err_msg = f'К сожалению, у вас нет доступа к этому боту. Пожалуйста, обратитесь к администратору @antoxaSV'
+            raise NotAccesUserError(err_msg)
 
-    async with async_session_maker() as session:
-        await session.execute(insert(RequestsLog).values(
-            user_id=user.id, request=message.text, message_id=message.message_id))
-        await session.commit()
+        async with async_session_maker() as session:
+            await session.execute(insert(RequestsLog).values(
+                user_id=user.id, request=message.text, message_id=message.message_id))
+            await session.commit()
 
-    raw_processed_urls = await extract_urls_from_message(message.text)
+        raw_processed_urls = await extract_urls_from_message(message.text)
 
-    await state.update_data(user_request=raw_processed_urls)
+        await state.update_data(user_request=raw_processed_urls)
 
-    button_1 = InlineKeyboardButton(
-        text="За всё время", callback_data="all_time_statistics"
-    )
-    button_2 = InlineKeyboardButton(text='Дата начала - дата окончания', callback_data='date_from-date_to')
-    # Создаем объект инлайн-клавиатуры
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[[button_1], [button_2]])
-    await message.answer('Задайте временной интервал сбора статистики:', reply_markup=keyboard)
+        button_1 = InlineKeyboardButton(text='Дата начала - по сегодняшний день', callback_data='date_from-today')
+        button_2 = InlineKeyboardButton(text='Дата начала - дата окончания', callback_data='date_from-date_to')
+        button_3 = InlineKeyboardButton(
+            text="За всё время", callback_data="all_time_statistics"
+        )
+
+        # Создаем объект инлайн-клавиатуры
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[[button_1], [button_2], [button_3]])
+        await message.answer('Задайте временной интервал сбора статистики:', reply_markup=keyboard)
+    except IncorrectUrl as err:
+        await message.answer(str(err))
+    except NotAccesUserError as err:
+        await message.answer(str(err))
+    except MaxCountUrlError as err:
+        await message.answer(str(err), parse_mode='html')
+    except BadRequestError as err:
+        await message.answer(str(err))
+    except ClientResponseError as err:
+        await message.answer(
+            'Ошибка выполнения запроса. Проверьте корректность введенного периода выполнения запроса или обратитесь к администратору @antoxaSV')
+    except Exception as err:
+        print('Произошла непредвиденная ошибка')
+        print(sys.exc_info())
+        await message.answer(f'Жесткая ошибка\n\n{str(err)[:63]}')
+
+
+@dp.callback_query(F.data == 'all_time_statistics')
+async def stat_all_time(callback: CallbackQuery, state: FSMContext):
+    raw_processed_urls = await state.get_data()
+    raw_processed_urls = raw_processed_urls.get('user_request')
+
+    header = f'Статистика на {datetime.date.today().strftime("%d.%m.%Y")}'
+    async with ClientSession() as http_request_session:
+        await request_processing(raw_processed_urls=raw_processed_urls,
+                                 callback=callback, http_request_session=http_request_session, date1='2021-04-12',
+                                 date2=datetime.date.today(),
+                                 header=header)
+    await state.clear()
+
+
+@dp.callback_query(F.data == 'date_from-today')
+async def date_from_today(callback: CallbackQuery, state: FSMContext):
+    await callback.message.delete()
+    await callback.message.answer('Введите дату начала периода в формате DD.MM.YYYY')
+    await state.set_state(States.waiting_one_date)
+
+
+@dp.callback_query(F.data == 'date_from-date_to')
+async def date_from_date_to(callback: CallbackQuery, state: FSMContext):
+    await callback.message.delete()
+    await callback.message.answer("Введите дату начала и дату окончания периода в формате DD.MM.YYYY-DD.MM.YYYY")
+    await state.set_state(States.waiting_two_dates)
 
 
 async def request_processing(raw_processed_urls, http_request_session: ClientSession,
@@ -142,34 +206,9 @@ async def request_processing(raw_processed_urls, http_request_session: ClientSes
     except BadRequestError as err:
         await message.answer(str(err))
     except Exception as err:
-        print('жесткая ошибка')
+        print('Произошла непредвиденная ошибка')
         print(sys.exc_info())
         await message.answer(f'Жесткая ошибка\n\n{str(err)[:63]}')
-
-
-@dp.callback_query(F.data == 'date_from-date_to')
-async def dates_answer(callback: CallbackQuery, state: FSMContext):
-    await callback.message.delete()
-    await callback.message.answer("Введите дату начала и дату окончания в формате DD.MM.YYYY-DD.MM.YYYY")
-    await state.set_state(States.waiting_dates)
-
-
-@dp.callback_query(F.data == 'all_time_statistics')
-async def stat_all_time(callback: CallbackQuery, state: FSMContext):
-    raw_processed_urls = await state.get_data()
-    raw_processed_urls = raw_processed_urls.get('user_request')
-
-    header = f'Статистика на {datetime.date.today().strftime("%d.%m.%Y")}'
-    async with ClientSession() as http_request_session:
-        await request_processing(raw_processed_urls=raw_processed_urls,
-                                 callback=callback, http_request_session=http_request_session, date1='2021-04-12',
-                                 date2=datetime.date.today(),
-                                 header=header)
-
-
-@dp.message()
-async def uncorrect_message(message: Message):
-    return message.answer('Похоже что вы ввели не URL. Справку по использованию бота можно получить по команде /start')
 
 
 async def main():
