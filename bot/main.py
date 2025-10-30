@@ -2,24 +2,33 @@ import asyncio
 import os
 import re
 import sys
-from datetime import datetime
+import datetime
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
 from aiogram.filters import Command
-import xlsxwriter
 from aiohttp import ClientSession
 from sqlalchemy import select, insert
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 
 from utils.ym_api import YMRequest
-from utils.url_processing import urls_processing, IncorrectUrl, extract_urls_from_message, MaxCountUrlError
+from utils.url_processing import urls_processing, IncorrectUrl, extract_urls_from_message, MaxCountUrlError, \
+    BadRequestError
 from settings import tg_token, ym_token
 from database.db import async_session_maker
 from database.models import User, RequestsLog
 from utils.ym_api import statistic
+from utils.xlsx_file_formatter import xlsx_writter
+from sqlalchemy.ext.asyncio import AsyncSession
 
 bot = Bot(token=tg_token)
 dp = Dispatcher()
+
+
+class States(StatesGroup):
+    waiting_urls = State()
+    waiting_dates = State()
 
 
 class NotAccesUserError(Exception):
@@ -37,78 +46,6 @@ async def check_user(user_tg_id):
     return result.scalar()
 
 
-def xlsx_writter(statistics: list[statistic], filename: str, sum_stat):
-    """
-    Функция записывает данные статистики с excel-файл
-    :param statistics: список с объектами statistic (namedtuple)
-    :param filename: имя выходного файла
-    :return: None
-    """
-    workbook = xlsxwriter.Workbook(f'../{filename}', {'in_memory': True})
-    worksheet = workbook.add_worksheet()
-    worksheet.merge_range(
-        'A1:I1',
-        'СТАТИСТИКА',
-        workbook.add_format({'bold': True, 'align': 'center', 'font_size': 14, 'border': 2, 'bg_color': '#B0E0E6'}))
-    headers = [
-        '№', 'URL-адрес', 'Визитов', 'Посещений', 'Просмотров', 'Глубина просмотра', 'Время на сайте', 'Доля отказов',
-        'Доля новых'
-    ]
-    # запись заголовков таблицы
-    for col, header in enumerate(headers):
-        worksheet.write(1, col, header, workbook.add_format({'bold': True, 'border': 2, 'align': 'center'}))
-
-    # форматы записи статистики в ячейки
-    default_format = workbook.add_format({'border': 1, 'align': 'center'})
-    url_format = workbook.add_format({'border': 1, 'align': 'left'})
-    time_format = workbook.add_format({'num_format': 'hh:mm:ss', 'align': 'center', 'border': 1})
-    percent_format = workbook.add_format({'num_format': '0.00%', 'align': 'center', 'border': 1})
-
-    # запись данных
-    for row, row_stat in enumerate(statistics, start=2):
-        worksheet.write(row, 0, row - 1, workbook.add_format({'border': 2, 'align': 'center'}))
-        worksheet.write(row, 1, row_stat.raw_url, url_format)
-        worksheet.write(row, 2, row_stat.visits, default_format)
-        worksheet.write(row, 3, row_stat.users, default_format)
-        worksheet.write(row, 4, row_stat.pageViews, default_format)
-        worksheet.write(row, 5, row_stat.pageDepth, default_format)
-        worksheet.write(row, 6, row_stat.visitDuration, time_format)
-        worksheet.write(row, 7, row_stat.bounceRate / 100, percent_format)
-        worksheet.write(row, 8, row_stat.newUsers / 100, percent_format)
-
-    # Запись итогов
-    print('суммарная стата', sum_stat)
-    # № строки для записи итогов (+2 строки с учетом заголовков)
-    itog_row = len(statistics) + 2
-    print('itog_row', itog_row)
-    worksheet.merge_range(f'A{itog_row + 1}:B{itog_row + 1}', 'ИТОГО',
-                          worksheet.workbook_add_format({'bold': True, 'align': 'center', 'border': 1}))
-    # worksheet.write(itog_row, 0, 'Итого', workbook.add_format({'bold': True, 'border': 2, 'align': 'center'}))
-    worksheet.write(itog_row, 1, '', default_format)
-    worksheet.write(itog_row, 2, sum_stat.visits, default_format)
-    worksheet.write(itog_row, 3, sum_stat.users, default_format)
-    worksheet.write(itog_row, 4, sum_stat.pageViews, default_format)
-    worksheet.write(itog_row, 5, sum_stat.pageDepth, default_format)
-    worksheet.write(itog_row, 6, sum_stat.visitDuration, time_format)
-    worksheet.write(itog_row, 7, sum_stat.bounceRate / 100, percent_format)
-    worksheet.write(itog_row, 8, sum_stat.newUsers / 100, percent_format)
-
-    # применение условного форматирования к заполненным данным
-    for cell in ('C', 'D', 'E', 'F', 'G', 'H', 'I'):
-        # для доли отказов применяем инвертированные цвета
-        if cell == 'H':
-            worksheet.conditional_format(f'{cell}3:{cell}{itog_row}', {
-                'type': '3_color_scale',
-                'min_color': '#63BE7B',
-                'mid_color': '#FFEB84',
-                'max_color': '#F8696B'})
-        else:
-            worksheet.conditional_format(f'{cell}3:{cell}{itog_row}', {'type': '3_color_scale'})
-
-    # выравнивание ширины ячеек по контенту (макс ширина = 450 px)
-    worksheet.autofit(450)
-    worksheet.set_column(0, 0, 6)
-    workbook.close()
 
 
 @dp.message(Command('start'))
@@ -122,8 +59,26 @@ async def start_handler(message: Message):
     )
 
 
+@dp.message(States.waiting_dates)
+async def get_dates(message: Message, state: FSMContext):
+    format = '%d.%m.%Y'
+    try:
+        date1, date2 = message.text.split('-')
+        date1, date2 = datetime.datetime.strptime(date1, format), datetime.datetime.strptime(date2, format)
+        date1, date2 = date1.date(), date2.date()
+        raw_processed_urls = await state.get_data()
+        raw_processed_urls = raw_processed_urls.get('user_request')
+        header = f'Статистика за период с {date1.strftime("%d.%m.%Y")} по {date2.strftime("%d.%m.%Y")}'
+        async with ClientSession() as http_client_session:
+            await request_processing(raw_processed_urls=raw_processed_urls, http_request_session=http_client_session,
+                                     date1=str(date1), date2=str(date2), header=header, message=message)
+        await state.set_state(None)
+    except ValueError:
+        await message.answer('Некорректный формат даты.')
+
+
 @dp.message(F.text)
-async def get_message(message: Message):
+async def get_message(message: Message, state: FSMContext):
     user = await check_user(message.from_user.id)
     # если пользователя нет в БД, не берем его запрос в обработку
     if not bool(user):
@@ -135,68 +90,81 @@ async def get_message(message: Message):
             user_id=user.id, request=message.text, message_id=message.message_id))
         await session.commit()
 
+    raw_processed_urls = await extract_urls_from_message(message.text)
+
+    await state.update_data(user_request=raw_processed_urls)
+
     button_1 = InlineKeyboardButton(
         text="За всё время", callback_data="all_time_statistics"
     )
     button_2 = InlineKeyboardButton(text='Дата начала - дата окончания', callback_data='date_from-date_to')
     # Создаем объект инлайн-клавиатуры
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[[button_1]])
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[[button_1], [button_2]])
     await message.answer('Задайте временной интервал сбора статистики:', reply_markup=keyboard)
 
 
-@dp.callback_query(F.data == 'date_from-date_to')
-async def state_from_to(callback: CallbackQuery):
-    pass
-
-
-@dp.callback_query(F.data == 'all_time_statistics')
-async def stat_all_time(callback: CallbackQuery):
-    async with async_session_maker() as session:
-        message = await session.execute(
-            select(RequestsLog.request).where(RequestsLog.message_id == callback.message.message_id - 1))
-        message = message.scalar()
-
+async def request_processing(raw_processed_urls, http_request_session: ClientSession,
+                             date1, date2, header, callback: CallbackQuery = None, message: Message = None):
     try:
-
-        # словарь в виде - сырой юрл: обработанный юрл
-        raw_processed_urls = await extract_urls_from_message(message)
-        await callback.message.delete()
+        if callback:
+            username = callback.from_user.username
+            message = callback.message
+            await message.delete()
+        else:
+            username = message.from_user.username
 
         ym_request = YMRequest(ym_token)
 
-        progress_msg = await callback.message.answer(
+        progress_msg = await message.answer(
             f'Получено <u><b>{len(raw_processed_urls)}</b></u> URL-адресов. Сбор статистики...', parse_mode='html')
+        tasks = [ym_request.get_statistics(http_request_session, raw_url, raw_processed_urls[raw_url], date1=date1,
+                                           date2=date2) for
+                 raw_url in raw_processed_urls]
+        result = await asyncio.gather(*tasks)
 
-        async with ClientSession() as session:
-            tasks = [ym_request.get_statistics(session, raw_url, raw_processed_urls[raw_url]) for
-                     raw_url in raw_processed_urls]
-            result = await asyncio.gather(*tasks)
-
-        # for count, raw_url in enumerate(raw_processed_urls, start=1):
-        #     stat_for_url = await ym_request.get_statistics(raw_url, raw_processed_urls[raw_url])
-        #     result.append(stat_for_url)
-        #     await progress_msg.edit_text(
-        #         f'Сбор статистики: {count}/{len(processed_urls)} ({round((count / len(processed_urls)) * 100)} %) обработано...')
-        filename = f"{callback.from_user.username}_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.xlsx"
+        filename = f"{username}_{datetime.datetime.today().strftime('%Y-%m-%d_%H-%M-%S')}.xlsx"
         await progress_msg.edit_text('Подвожу итоги...')
         sum_stat_for_url = await ym_request.get_sum_statistics(raw_processed_urls.keys(),
-                                                               raw_processed_urls.values())
+                                                               raw_processed_urls.values(), date1, date2)
         await progress_msg.edit_text('Формирую ответ...')
-        xlsx_writter(result, filename, sum_stat_for_url)
+        xlsx_writter(result, filename, sum_stat_for_url, header)
         await progress_msg.delete()
-        await bot.send_document(chat_id=callback.message.chat.id, document=FSInputFile(f'../{filename}'),
+        await bot.send_document(chat_id=message.chat.id, document=FSInputFile(f'../{filename}'),
                                 caption=f'Обработка завершена успешно!\n\nОбработано <u><b>{len(raw_processed_urls)}</b></u> URL-адресов.',
                                 parse_mode='html')
     except IncorrectUrl as err:
-        await callback.message.delete()
-        await callback.message.answer(str(err))
+        await message.delete()
+        await message.answer(str(err))
     except NotAccesUserError as err:
-        print('ошибка доступа', err)
-        await callback.message.delete()
-        await callback.message.answer(str(err))
+        await message.answer(str(err))
     except MaxCountUrlError as err:
-        await callback.message.delete()
-        await callback.message.answer(str(err), parse_mode='html')
+        await message.answer(str(err), parse_mode='html')
+    except BadRequestError as err:
+        await message.answer(str(err))
+    except Exception as err:
+        print('жесткая ошибка')
+        print(sys.exc_info())
+        await message.answer(f'Жесткая ошибка\n\n{str(err)[:63]}')
+
+
+@dp.callback_query(F.data == 'date_from-date_to')
+async def dates_answer(callback: CallbackQuery, state: FSMContext):
+    await callback.message.delete()
+    await callback.message.answer("Введите дату начала и дату окончания в формате DD.MM.YYYY-DD.MM.YYYY")
+    await state.set_state(States.waiting_dates)
+
+
+@dp.callback_query(F.data == 'all_time_statistics')
+async def stat_all_time(callback: CallbackQuery, state: FSMContext):
+    raw_processed_urls = await state.get_data()
+    raw_processed_urls = raw_processed_urls.get('user_request')
+
+    header = f'Статистика на {datetime.date.today().strftime("%d.%m.%Y")}'
+    async with ClientSession() as http_request_session:
+        await request_processing(raw_processed_urls=raw_processed_urls,
+                                 callback=callback, http_request_session=http_request_session, date1='2021-04-12',
+                                 date2=datetime.date.today(),
+                                 header=header)
 
 
 @dp.message()

@@ -20,11 +20,19 @@ class MaxCountUrlError(Exception):
         return self.message
 
 
+class BadRequestError(Exception):
+    def __init__(self):
+        self.message = 'В полученном запросе не найдено не одного URL-адреса.' \
+                       '\n\nДля получения справки по формирование запроса воспользуйтесь командой /help'
+
+
 async def extract_urls_from_message(text: str) -> dict:
     url_list = re.sub(r'[ ,\n]', ' ', text).split()
     if len(url_list) > 20:
         raise MaxCountUrlError
     raw_processed_urls = urls_processing(url_list)
+    if not raw_processed_urls:
+        raise BadRequestError
     return raw_processed_urls
 
 

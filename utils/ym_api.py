@@ -110,7 +110,7 @@ class YMRequest:
         #     await progress_msg.edit_text(new_progress_msg)
         return stat
 
-    async def get_sum_statistics(self, raw_urls, cleaned_urls, date1='2021-04-12', date2=datetime.date.today()):
+    async def get_sum_statistics(self, raw_urls, cleaned_urls, date1, date2):
         counters = await self._get_counters(raw_urls)
         counter_ids = ','.join(counters)
         filters = ' OR '.join([f"EXISTS(ym:pv:URL=*'*{cleaned_url}*')" for cleaned_url in cleaned_urls])

@@ -35,18 +35,23 @@
 #     return results
 #
 # asyncio.run(main())
-import re
-text = """https://um.mos.ru/novogodnie-katki/, https://um.mos.ru/routes/istoriya-novogo-goda-tradicii-prazdnovaniya-v-moskve/
-https://um.mos.ru/new_year/
+# import re
+# text = """https://um.mos.ru/novogodnie-katki/, https://um.mos.ru/routes/istoriya-novogo-goda-tradicii-prazdnovaniya-v-moskve/
+# https://um.mos.ru/new_year/
+#
+# https://um.mos.ru/quests/mgu-270-let-kviz-ko-dnyu-osnovaniya-moskovskogo-gosudarstvennogo-universiteta-imeni-m-v-lomonosova
+# https://um.mos.ru/quizzes/kvest-kosmonavtiki/
+#
+# https://um.mos.ru/mobile/houses/3287
+# """
+#
+# def extract_urls_from_message(message):
+#     url_list = re.sub(r'[ ,\n]', ' ', message).split()
+#     return url_list
+#
+# print(extract_urls_from_message(text))
+from datetime import datetime, date
 
-https://um.mos.ru/quests/mgu-270-let-kviz-ko-dnyu-osnovaniya-moskovskogo-gosudarstvennogo-universiteta-imeni-m-v-lomonosova
-https://um.mos.ru/quizzes/kvest-kosmonavtiki/
-
-https://um.mos.ru/mobile/houses/3287
-"""
-
-def extract_urls_from_message(message):
-    url_list = re.sub(r'[ ,\n]', ' ', message).split()
-    return url_list
-
-print(extract_urls_from_message(text))
+my_date = '13.10.2025'
+my_date = datetime.strptime(my_date, '%d.%m.%Y').date()
+print(type(my_date), str(my_date))
