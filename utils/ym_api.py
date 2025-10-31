@@ -28,6 +28,7 @@ class YandexMetrikaRateLimiter:
         self.min_interval = 1.0 / max_requests_per_second
         self.last_request_time = 0
         self.lock = asyncio.Lock()
+        asyncio.Semaphore(5)
 
     async def acquire(self):
         """Ожидает разрешения на выполнение запроса"""
@@ -51,6 +52,8 @@ class YMRequest:
         self.token = oauth_token
         self.api_url = 'https://api-metrika.yandex.net/stat/v1/data'
         self.headers = {'Authorization': self.token}
+        self.semaphore = asyncio.Semaphore(5)
+
 
     async def _get_counter(self, raw_url: str):
         # домен
@@ -80,7 +83,7 @@ class YMRequest:
         return stat
 
     async def get_statistics(self, session, raw_url, cleaned_url, date1='2021-04-12', date2=datetime.date.today()):
-        await metrika_limiter.acquire()
+        #await metrika_limiter.acquire()
         counter_id = await self._get_counter(raw_url)
         parameters = {
             'id': counter_id,
@@ -92,10 +95,11 @@ class YMRequest:
         }
         # stat = requests.get(self.api_url, headers=self.headers, params=parameters)
         # stat = stat.json().get('data')
-        async with session.get(self.api_url, headers=self.headers, params=parameters) as response:
-            response.raise_for_status()
-            stat = await response.json()
-            stat = stat.get('data')
+        async with self.semaphore:
+            async with session.get(self.api_url, headers=self.headers, params=parameters) as response:
+                response.raise_for_status()
+                stat = await response.json()
+                stat = stat.get('data')
 
         if stat:
             # т.к группировки не используются всегда берём первый элемент из data

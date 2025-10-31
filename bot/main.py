@@ -3,14 +3,17 @@ import os
 import re
 import sys
 import datetime
+import traceback
 
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
+from aiogram.types import Message, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery, \
+    BufferedInputFile
 from aiogram.filters import Command
 from aiohttp import ClientSession
 from sqlalchemy import select, insert
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+from aiogram.exceptions import TelegramNetworkError
 
 from utils.ym_api import YMRequest
 from utils.url_processing import urls_processing, IncorrectUrl, extract_urls_from_message, MaxCountUrlError, \
@@ -42,7 +45,6 @@ class NotAccesUserError(Exception):
 
 
 async def check_user(user_tg_id):
-    print('проверка пользователя')
     async with async_session_maker() as session:
         result = await session.execute(select(User).where(User.telegram_id == user_tg_id, User.active == True))
     return result.scalar()
@@ -95,7 +97,7 @@ async def get_two_dates(message: Message, state: FSMContext):
         await message.answer('Некорректный формат даты.')
 
 
-@dp.message(F.text)
+@dp.message(F.text.strip().startswith('https://'))
 async def get_message(message: Message, state: FSMContext):
     try:
         user = await check_user(message.from_user.id)
@@ -123,20 +125,15 @@ async def get_message(message: Message, state: FSMContext):
         keyboard = InlineKeyboardMarkup(inline_keyboard=[[button_1], [button_2], [button_3]])
         await message.answer('Задайте временной интервал сбора статистики:', reply_markup=keyboard)
     except IncorrectUrl as err:
-        await message.answer(str(err))
+        await message.answer(str(err), parse_mode='html')
     except NotAccesUserError as err:
         await message.answer(str(err))
     except MaxCountUrlError as err:
         await message.answer(str(err), parse_mode='html')
-    except BadRequestError as err:
-        await message.answer(str(err))
-    except ClientResponseError as err:
-        await message.answer(
-            'Ошибка выполнения запроса. Проверьте корректность введенного периода выполнения запроса или обратитесь к администратору @antoxaSV')
     except Exception as err:
-        print('Произошла непредвиденная ошибка')
-        print(sys.exc_info())
-        await message.answer(f'Жесткая ошибка\n\n{str(err)[:63]}')
+        # тут стоит логировать ошибку в БД
+        print(traceback.format_exc())
+        await message.answer(f'Непредвиденная ошибка.\n\n{str(err)[:63]}')
 
 
 @dp.callback_query(F.data == 'all_time_statistics')
@@ -167,6 +164,13 @@ async def date_from_date_to(callback: CallbackQuery, state: FSMContext):
     await state.set_state(States.waiting_two_dates)
 
 
+@dp.message()
+async def other_message(message: Message):
+    await message.answer('Ваш запрос не является корректным URL-адресом.' \
+                         ' Пожалуйста, проверьте правильность ввода URL-адреса.' \
+                         '\n\nПример корректного URL: https://um.mos.ru/quizzes/kvest-kosmonavtiki/')
+
+
 async def request_processing(raw_processed_urls, http_request_session: ClientSession,
                              date1, date2, header, callback: CallbackQuery = None, message: Message = None):
     try:
@@ -191,24 +195,24 @@ async def request_processing(raw_processed_urls, http_request_session: ClientSes
         sum_stat_for_url = await ym_request.get_sum_statistics(raw_processed_urls.keys(),
                                                                raw_processed_urls.values(), date1, date2)
         await progress_msg.edit_text('Формирую ответ...')
-        xlsx_writter(result, filename, sum_stat_for_url, header)
+        file: bytes = xlsx_writter(result, filename, sum_stat_for_url, header)
         await progress_msg.delete()
-        await bot.send_document(chat_id=message.chat.id, document=FSInputFile(f'../{filename}'),
+        await bot.send_document(chat_id=message.chat.id, document=BufferedInputFile(file=file, filename=filename),
                                 caption=f'Обработка завершена успешно!\n\nОбработано <u><b>{len(raw_processed_urls)}</b></u> URL-адресов.',
                                 parse_mode='html')
-    except IncorrectUrl as err:
-        await message.delete()
-        await message.answer(str(err))
-    except NotAccesUserError as err:
-        await message.answer(str(err))
-    except MaxCountUrlError as err:
-        await message.answer(str(err), parse_mode='html')
+
     except BadRequestError as err:
         await message.answer(str(err))
+    except ClientResponseError as err:
+        await message.answer(
+            'Ошибка выполнения запроса к Яндекс Метрике.' \
+            'Пожалуйста, сверьте вводимые даты начала и окончания периода. Если вы не вводили даты вручную и (или)' \
+            ' проблема повторяется, пожалуйста, обратитесь к администратору @antoxaSV'
+        )
     except Exception as err:
-        print('Произошла непредвиденная ошибка')
-        print(sys.exc_info())
-        await message.answer(f'Жесткая ошибка\n\n{str(err)[:63]}')
+        # тут стоит логировать ошибку в таблицу БД
+        print(traceback.format_exc())
+        await message.answer(f'Произошла непредвиденная ошибка\n\n{str(err)[:63]}')
 
 
 async def main():

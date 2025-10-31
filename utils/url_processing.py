@@ -26,6 +26,9 @@ class BadRequestError(Exception):
         self.message = 'В полученном запросе не найдено не одного URL-адреса.' \
                        '\n\nДля получения справки по формирование запроса воспользуйтесь командой /help'
 
+    def __str(self):
+        return self.message
+
 
 async def extract_urls_from_message(text: str) -> dict:
     url_list = re.sub(r'[ ,\n]', ' ', text).split()
@@ -45,7 +48,7 @@ def urls_processing(raw_urls: list) -> dict:
         scheme, netloc, path = parse_url.scheme, parse_url.netloc, parse_url.path
 
         if not all((scheme, netloc, path)):
-            raise IncorrectUrl(f'Получен некорректный url-адрес: {raw_url}')
+            raise IncorrectUrl(f'Получен некорректный url-адрес: <u>{raw_url}</u>')
 
         process_url = netloc + path
         if not process_url.endswith('/'):
