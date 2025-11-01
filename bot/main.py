@@ -1,30 +1,25 @@
 import asyncio
-import os
-import re
-import sys
 import datetime
 import traceback
 
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery, \
+from aiogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery, \
     BufferedInputFile
 from aiogram.filters import Command
 from aiohttp import ClientSession
 from sqlalchemy import select, insert
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.exceptions import TelegramNetworkError
+from aiohttp.client_exceptions import ClientResponseError
 
 from utils.ym_api import YMRequest
-from utils.url_processing import urls_processing, IncorrectUrl, extract_urls_from_message, MaxCountUrlError, \
+from utils.url_processing import IncorrectUrl, extract_urls_from_message, MaxCountUrlError, \
     BadRequestError
 from settings import tg_token, ym_token
 from database.db import async_session_maker
 from database.models import User, RequestsLog
-from utils.ym_api import statistic
 from utils.xlsx_file_formatter import xlsx_writter
-from sqlalchemy.ext.asyncio import AsyncSession
-from aiohttp.client_exceptions import ClientResponseError
+from utils.logging import write_error_to_db
 
 bot = Bot(token=tg_token)
 dp = Dispatcher()
@@ -60,20 +55,31 @@ async def start_handler(message: Message):
         parse_mode='html'
     )
 
+@dp.message(Command('help'))
+async def start_handler(message: Message):
+    await message.answer(
+        "\nПри вводе нескольких URL в качестве разделителей допустимо использовать: " \
+        "многострочный ввод (каждый новый URL начинается с новой строки), проблелы или запятые. " \
+        "\n\n <u>Внимание!</u> При вводе нескольких URL одновременно допускается не более 20 URL в сообщении!" \
+        "\n\n Пример корректного URL: https://um.mos.ru/quizzes/kvest-kosmonavtiki/",
+        parse_mode='html'
+    )
+
 
 @dp.message(States.waiting_one_date)
 async def get_one_date(message: Message, state: FSMContext):
-    format = '%d.%m.%Y'
+    date_format = '%d.%m.%Y'
     try:
-        date1 = datetime.datetime.strptime(message.text, format)
+        date1 = datetime.datetime.strptime(message.text, date_format)
         date1 = date1.date()
         date2 = datetime.date.today()
-        raw_processing_urls = await state.get_data()
-        raw_processing_urls = raw_processing_urls.get('user_request')
+        data = await state.get_data()
+        raw_processing_urls = data.get('user_request')
         header = f'Статистика за период с {date1.strftime("%d.%m.%Y")} по {date2.strftime("%d.%m.%Y")}'
         async with ClientSession() as http_client_session:
             await request_processing(raw_processed_urls=raw_processing_urls, http_request_session=http_client_session,
-                                     date1=str(date1), date2=str(date2), header=header, message=message)
+                                     date1=str(date1), date2=str(date2), header=header, message=message,
+                                     request_id=data.get('request_id'))
         await state.clear()
     except ValueError:
         await message.answer('Некорректный формат даты')
@@ -81,20 +87,33 @@ async def get_one_date(message: Message, state: FSMContext):
 
 @dp.message(States.waiting_two_dates)
 async def get_two_dates(message: Message, state: FSMContext):
-    format = '%d.%m.%Y'
+    date_format = '%d.%m.%Y'
+    data = await state.get_data()
+    request_id = data.get('request_id')
+    raw_processed_urls = data.get('user_request')
     try:
         date1, date2 = message.text.split('-')
-        date1, date2 = datetime.datetime.strptime(date1, format), datetime.datetime.strptime(date2, format)
+        date1, date2 = datetime.datetime.strptime(date1, date_format), datetime.datetime.strptime(date2, date_format)
         date1, date2 = date1.date(), date2.date()
-        raw_processed_urls = await state.get_data()
-        raw_processed_urls = raw_processed_urls.get('user_request')
+        if date2 > datetime.date.today():
+            date2 = datetime.date.today()
+            await message.answer(
+                f'Дата окончания периода была скорректирована на {date2.strftime("%d.%m.%Y")}' \
+                ' т.к период не может кончаться позже сегодняшней даты.'
+            )
+        if date1 > date2:
+            raise ValueError
         header = f'Статистика за период с {date1.strftime("%d.%m.%Y")} по {date2.strftime("%d.%m.%Y")}'
         async with ClientSession() as http_client_session:
             await request_processing(raw_processed_urls=raw_processed_urls, http_request_session=http_client_session,
-                                     date1=str(date1), date2=str(date2), header=header, message=message)
+                                     date1=str(date1), date2=str(date2), header=header, message=message,
+                                     request_id=data.get('request_id'))
         await state.clear()
-    except ValueError:
+    except ValueError as err:
         await message.answer('Некорректный формат даты.')
+    except Exception as err:
+        await write_error_to_db(request_id, traceback.format_exc())
+        await message.answer('Произошла непредвиденная ошибка.')
 
 
 @dp.message(F.text.strip().startswith('https://'))
@@ -107,13 +126,14 @@ async def get_message(message: Message, state: FSMContext):
             raise NotAccesUserError(err_msg)
 
         async with async_session_maker() as session:
-            await session.execute(insert(RequestsLog).values(
-                user_id=user.id, request=message.text, message_id=message.message_id))
+            request_id = await session.execute(insert(RequestsLog).values(
+                user_id=user.id, request=message.text).returning(RequestsLog.id))
+            request_id = request_id.scalar_one()
             await session.commit()
 
         raw_processed_urls = await extract_urls_from_message(message.text)
 
-        await state.update_data(user_request=raw_processed_urls)
+        await state.update_data(user_request=raw_processed_urls, request_id=request_id)
 
         button_1 = InlineKeyboardButton(text='Дата начала - по сегодняшний день', callback_data='date_from-today')
         button_2 = InlineKeyboardButton(text='Дата начала - дата окончания', callback_data='date_from-date_to')
@@ -126,27 +146,29 @@ async def get_message(message: Message, state: FSMContext):
         await message.answer('Задайте временной интервал сбора статистики:', reply_markup=keyboard)
     except IncorrectUrl as err:
         await message.answer(str(err), parse_mode='html')
+        await write_error_to_db(request_id, traceback.format_exc())
     except NotAccesUserError as err:
         await message.answer(str(err))
+        await write_error_to_db(request_id, traceback.format_exc())
     except MaxCountUrlError as err:
         await message.answer(str(err), parse_mode='html')
+        await write_error_to_db(request_id, traceback.format_exc())
     except Exception as err:
-        # тут стоит логировать ошибку в БД
-        print(traceback.format_exc())
-        await message.answer(f'Непредвиденная ошибка.\n\n{str(err)[:63]}')
+        await write_error_to_db(request_id, traceback.format_exc())
+        await message.answer(f'Непредвиденная ошибка.\n\n{str(err)[:4000]}')
 
 
 @dp.callback_query(F.data == 'all_time_statistics')
 async def stat_all_time(callback: CallbackQuery, state: FSMContext):
-    raw_processed_urls = await state.get_data()
-    raw_processed_urls = raw_processed_urls.get('user_request')
+    data = await state.get_data()
+    raw_processed_urls = data.get('user_request')
 
     header = f'Статистика на {datetime.date.today().strftime("%d.%m.%Y")}'
     async with ClientSession() as http_request_session:
         await request_processing(raw_processed_urls=raw_processed_urls,
                                  callback=callback, http_request_session=http_request_session, date1='2021-04-12',
                                  date2=datetime.date.today(),
-                                 header=header)
+                                 header=header, request_id=data.get('request_id'))
     await state.clear()
 
 
@@ -166,13 +188,14 @@ async def date_from_date_to(callback: CallbackQuery, state: FSMContext):
 
 @dp.message()
 async def other_message(message: Message):
-    await message.answer('Ваш запрос не является корректным URL-адресом.' \
-                         ' Пожалуйста, проверьте правильность ввода URL-адреса.' \
+    await message.answer('Похоже, Ваш запрос не является корректным URL-адресом.' \
+                         ' Пожалуйста, проверьте правильность формирования запроса.' \
                          '\n\nПример корректного URL: https://um.mos.ru/quizzes/kvest-kosmonavtiki/')
 
 
 async def request_processing(raw_processed_urls, http_request_session: ClientSession,
-                             date1, date2, header, callback: CallbackQuery = None, message: Message = None):
+                             date1, date2, header, request_id: int, callback: CallbackQuery = None,
+                             message: Message = None):
     try:
         if callback:
             username = callback.from_user.username
@@ -202,17 +225,18 @@ async def request_processing(raw_processed_urls, http_request_session: ClientSes
                                 parse_mode='html')
 
     except BadRequestError as err:
+        await write_error_to_db(request_id, traceback.format_exc())
         await message.answer(str(err))
     except ClientResponseError as err:
+        await write_error_to_db(request_id, traceback.format_exc())
         await message.answer(
             'Ошибка выполнения запроса к Яндекс Метрике.' \
             'Пожалуйста, сверьте вводимые даты начала и окончания периода. Если вы не вводили даты вручную и (или)' \
             ' проблема повторяется, пожалуйста, обратитесь к администратору @antoxaSV'
         )
     except Exception as err:
-        # тут стоит логировать ошибку в таблицу БД
-        print(traceback.format_exc())
-        await message.answer(f'Произошла непредвиденная ошибка\n\n{str(err)[:63]}')
+        await write_error_to_db(request_id, traceback.format_exc())
+        await message.answer(f'Произошла непредвиденная ошибка\n\n{str(err)[:4000]}')
 
 
 async def main():

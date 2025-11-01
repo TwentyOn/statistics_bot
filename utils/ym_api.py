@@ -118,7 +118,6 @@ class YMRequest:
         counters = await self._get_counters(raw_urls)
         counter_ids = ','.join(counters)
         filters = ' OR '.join([f"EXISTS(ym:pv:URL=*'*{cleaned_url}*')" for cleaned_url in cleaned_urls])
-        print(filters)
         parameters = {
             'ids': counter_ids,
             'metrics': 'ym:s:visits,ym:s:users,ym:s:pageviews,ym:s:pageDepth,ym:s:avgVisitDurationSeconds,ym:s:bounceRate,ym:s:percentNewVisitors',

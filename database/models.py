@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, Boolean, DateTime, ForeignKey, BIGINT, TEXT, ARRAY
+from sqlalchemy import Column, Integer, Boolean, DateTime, ForeignKey, BIGINT, TEXT, ARRAY, String
 from database.db import Base, async_session_maker
 
 from sqlalchemy import select
@@ -41,6 +41,6 @@ class RequestsLog(Base):
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     user_id = Column(Integer, ForeignKey('user.id', ondelete='RESTRICT'), nullable=False)
     request = Column(TEXT(5000), nullable=False)
-    message_id = Column(BIGINT)
-    created_at = Column(DateTime)
-
+    error_msg = Column(TEXT, nullable=True)
+    s3_file_path = Column(String(100), nullable=True)
+    created_at = Column(DateTime, nullable=False)
