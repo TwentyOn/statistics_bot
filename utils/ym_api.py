@@ -83,7 +83,7 @@ class YMRequest:
         return stat
 
     async def get_statistics(self, session, raw_url, cleaned_url, date1='2021-04-12', date2=datetime.date.today()):
-        #await metrika_limiter.acquire()
+        await metrika_limiter.acquire()
         counter_id = await self._get_counter(raw_url)
         parameters = {
             'id': counter_id,
