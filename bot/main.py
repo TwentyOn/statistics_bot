@@ -15,11 +15,12 @@ from aiohttp.client_exceptions import ClientResponseError
 from utils.ym_api import YMRequest
 from utils.url_processing import IncorrectUrl, extract_urls_from_message, MaxCountUrlError, \
     BadRequestError
+from utils.xlsx_file_formatter import xlsx_writter
+from utils.custom_exceptions import NotAccessUserError
+from utils.logging import write_error_to_db
 from settings import tg_token, ym_token
 from database.db import async_session_maker
 from database.models import User, RequestsLog
-from utils.xlsx_file_formatter import xlsx_writter
-from utils.logging import write_error_to_db
 
 bot = Bot(token=tg_token)
 dp = Dispatcher()
@@ -29,14 +30,6 @@ class States(StatesGroup):
     waiting_urls = State()
     waiting_two_dates = State()
     waiting_one_date = State()
-
-
-class NotAccesUserError(Exception):
-    def __init__(self, message='Отказано в доступе'):
-        self.message = message
-
-    def __str(self):
-        return self.message
 
 
 async def check_user(user_tg_id):
@@ -129,11 +122,11 @@ async def get_message(message: Message, state: FSMContext):
         # если пользователя нет в БД, не берем его запрос в обработку
         if not bool(user):
             err_msg = f'К сожалению, у вас нет доступа к этому боту. Пожалуйста, обратитесь к администратору @antoxaSV'
-            raise NotAccesUserError(err_msg)
+            raise NotAccessUserError(err_msg)
 
         async with async_session_maker() as session:
             request_id = await session.execute(insert(RequestsLog).values(
-                user_id=user.id, request=message.text).returning(RequestsLog.id))
+                user_id=user.id, request=message.text, status='ok').returning(RequestsLog.id))
             request_id = request_id.scalar_one()
             await session.commit()
 
@@ -153,7 +146,7 @@ async def get_message(message: Message, state: FSMContext):
     except IncorrectUrl as err:
         await message.answer(str(err), parse_mode='html')
         await write_error_to_db(request_id, traceback.format_exc())
-    except NotAccesUserError as err:
+    except NotAccessUserError as err:
         await message.answer(str(err))
         await write_error_to_db(request_id, traceback.format_exc())
     except MaxCountUrlError as err:
@@ -237,7 +230,7 @@ async def request_processing(raw_processed_urls, http_request_session: ClientSes
         await write_error_to_db(request_id, traceback.format_exc())
         await message.answer(
             'Ошибка выполнения запроса к Яндекс Метрике.' \
-            'Пожалуйста, сверьте вводимые даты начала и окончания периода. Если вы не вводили даты вручную и (или)' \
+            ' Пожалуйста, сверьте вводимые даты начала и окончания периода. Если вы не вводили даты вручную и (или)' \
             ' проблема повторяется, пожалуйста, обратитесь к администратору @antoxaSV'
         )
     except Exception as err:

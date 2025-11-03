@@ -42,5 +42,6 @@ class RequestsLog(Base):
     user_id = Column(Integer, ForeignKey('user.id', ondelete='RESTRICT'), nullable=False)
     request = Column(TEXT(5000), nullable=False)
     error_msg = Column(TEXT, nullable=True)
+    status = Column(String(5), nullable=False)
     s3_file_path = Column(String(100), nullable=True)
     created_at = Column(DateTime, nullable=False)

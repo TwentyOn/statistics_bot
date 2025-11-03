@@ -23,7 +23,7 @@ statistic = namedtuple('Statistic', [
 
 
 class YandexMetrikaRateLimiter:
-    def __init__(self, max_requests_per_second: int = 5):
+    def __init__(self, max_requests_per_second: int = 1):
         self.max_requests_per_second = max_requests_per_second
         self.min_interval = 1.0 / max_requests_per_second
         self.last_request_time = 0
@@ -48,12 +48,18 @@ metrika_limiter = YandexMetrikaRateLimiter(max_requests_per_second=5)
 
 
 class YMRequest:
+    _instance = None
+
+    def __new__(cls, *args, **kwargs):
+        if not cls._instance:
+            cls._instance = super().__new__(cls)
+            cls._instance.semaphore = asyncio.Semaphore(5)
+        return cls._instance
+
     def __init__(self, oauth_token):
         self.token = oauth_token
         self.api_url = 'https://api-metrika.yandex.net/stat/v1/data'
         self.headers = {'Authorization': self.token}
-        self.semaphore = asyncio.Semaphore(5)
-
 
     async def _get_counter(self, raw_url: str):
         # домен
