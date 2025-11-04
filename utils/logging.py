@@ -16,7 +16,10 @@ def error_logging(func):
                 pass
 
 
-async def write_error_to_db(request_id: int, trace: str):
+async def write_error_to_db(request_id: int, trace: str, unexpected=False):
     async with async_session_maker() as session:
-        await session.execute(update(RequestsLog).where(RequestsLog.id == request_id).values(error_msg=trace))
+        if unexpected:
+            await session.execute(update(RequestsLog).where(RequestsLog.id == request_id).values(error_msg=trace, status='unexpected_error'))
+        else:
+            await session.execute(update(RequestsLog).where(RequestsLog.id == request_id).values(error_msg=trace))
         await session.commit()

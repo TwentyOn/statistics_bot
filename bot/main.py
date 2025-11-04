@@ -1,5 +1,6 @@
 import asyncio
 import datetime
+import io
 import traceback
 
 from aiogram import Bot, Dispatcher, F
@@ -7,7 +8,7 @@ from aiogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup, C
     BufferedInputFile
 from aiogram.filters import Command
 from aiohttp import ClientSession
-from sqlalchemy import select, insert
+from sqlalchemy import select, insert, update
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiohttp.client_exceptions import ClientResponseError
@@ -21,6 +22,7 @@ from utils.logging import write_error_to_db
 from settings import tg_token, ym_token
 from database.db import async_session_maker
 from database.models import User, RequestsLog
+from utils.load_file_to_minio import storage
 
 bot = Bot(token=tg_token)
 dp = Dispatcher()
@@ -68,13 +70,16 @@ async def start_handler(message: Message):
 @dp.message(States.waiting_one_date)
 async def get_one_date(message: Message, state: FSMContext):
     date_format = '%d.%m.%Y'
+    data = await state.get_data()
+    request_id = data.get('request_id')
+    raw_processing_urls = data.get('user_request')
     try:
         date1 = datetime.datetime.strptime(message.text, date_format)
         date1 = date1.date()
         date2 = datetime.date.today()
-        data = await state.get_data()
-        raw_processing_urls = data.get('user_request')
+
         header = f'Статистика за период с {date1.strftime("%d.%m.%Y")} по {date2.strftime("%d.%m.%Y")}'
+
         async with ClientSession() as http_client_session:
             await request_processing(raw_processed_urls=raw_processing_urls, http_request_session=http_client_session,
                                      date1=str(date1), date2=str(date2), header=header, message=message,
@@ -82,6 +87,9 @@ async def get_one_date(message: Message, state: FSMContext):
         await state.clear()
     except ValueError:
         await message.answer('Некорректный формат даты')
+    except Exception as err:
+        await write_error_to_db(request_id, traceback.format_exc(), unexpected=True)
+        await message.answer('Произошла непредвиденная ошибка.')
 
 
 @dp.message(States.waiting_two_dates)
@@ -94,24 +102,23 @@ async def get_two_dates(message: Message, state: FSMContext):
         date1, date2 = message.text.split('-')
         date1, date2 = datetime.datetime.strptime(date1, date_format), datetime.datetime.strptime(date2, date_format)
         date1, date2 = date1.date(), date2.date()
-        if date2 > datetime.date.today():
-            date2 = datetime.date.today()
-            await message.answer(
-                f'Дата окончания периода была скорректирована на {date2.strftime("%d.%m.%Y")}' \
-                ' т.к период не может кончаться позже сегодняшней даты.'
-            )
+
         if date1 > date2:
             raise ValueError
-        header = f'Статистика за период с {date1.strftime("%d.%m.%Y")} по {date2.strftime("%d.%m.%Y")}'
-        async with ClientSession() as http_client_session:
-            await request_processing(raw_processed_urls=raw_processed_urls, http_request_session=http_client_session,
-                                     date1=str(date1), date2=str(date2), header=header, message=message,
-                                     request_id=data.get('request_id'))
-        await state.clear()
+        if date2 > datetime.date.today():
+            # date2 = datetime.date.today()
+            await message.answer(f'Дата окончания периода не может кончаться позже сегодняшней даты.')
+        else:
+            header = f'Статистика за период с {date1.strftime("%d.%m.%Y")} по {date2.strftime("%d.%m.%Y")}'
+            async with ClientSession() as http_client_session:
+                await request_processing(raw_processed_urls=raw_processed_urls, http_request_session=http_client_session,
+                                         date1=str(date1), date2=str(date2), header=header, message=message,
+                                         request_id=data.get('request_id'))
+            await state.clear()
     except ValueError as err:
         await message.answer('Некорректный формат даты.')
     except Exception as err:
-        await write_error_to_db(request_id, traceback.format_exc())
+        await write_error_to_db(request_id, traceback.format_exc(), unexpected=True)
         await message.answer('Произошла непредвиденная ошибка.')
 
 
@@ -136,24 +143,25 @@ async def get_message(message: Message, state: FSMContext):
 
         button_1 = InlineKeyboardButton(text='Дата начала - по сегодняшний день', callback_data='date_from-today')
         button_2 = InlineKeyboardButton(text='Дата начала - дата окончания', callback_data='date_from-date_to')
-        button_3 = InlineKeyboardButton(
-            text="За всё время", callback_data="all_time_statistics"
-        )
-
+        button_3 = InlineKeyboardButton(text="За всё время", callback_data="all_time_statistics")
         # Создаем объект инлайн-клавиатуры
         keyboard = InlineKeyboardMarkup(inline_keyboard=[[button_1], [button_2], [button_3]])
         await message.answer('Задайте временной интервал сбора статистики:', reply_markup=keyboard)
+
     except IncorrectUrl as err:
         await message.answer(str(err), parse_mode='html')
         await write_error_to_db(request_id, traceback.format_exc())
+
     except NotAccessUserError as err:
         await message.answer(str(err))
         await write_error_to_db(request_id, traceback.format_exc())
+
     except MaxCountUrlError as err:
         await message.answer(str(err), parse_mode='html')
         await write_error_to_db(request_id, traceback.format_exc())
+
     except Exception as err:
-        await write_error_to_db(request_id, traceback.format_exc())
+        await write_error_to_db(request_id, traceback.format_exc(), unexpected=True)
         await message.answer(f'Непредвиденная ошибка.\n\n{str(err)[:4000]}')
 
 
@@ -164,10 +172,9 @@ async def stat_all_time(callback: CallbackQuery, state: FSMContext):
 
     header = f'Статистика на {datetime.date.today().strftime("%d.%m.%Y")}'
     async with ClientSession() as http_request_session:
-        await request_processing(raw_processed_urls=raw_processed_urls,
-                                 callback=callback, http_request_session=http_request_session, date1='2021-04-12',
-                                 date2=datetime.date.today(),
-                                 header=header, request_id=data.get('request_id'))
+        await request_processing(raw_processed_urls=raw_processed_urls, callback=callback,
+                                 http_request_session=http_request_session, header=header,
+                                 request_id=data.get('request_id'))
     await state.clear()
 
 
@@ -192,8 +199,8 @@ async def other_message(message: Message):
                          '\n\nПример корректного URL: https://um.mos.ru/quizzes/kvest-kosmonavtiki/')
 
 
-async def request_processing(raw_processed_urls, http_request_session: ClientSession,
-                             date1, date2, header, request_id: int, callback: CallbackQuery = None,
+async def request_processing(raw_processed_urls, http_request_session: ClientSession, header, request_id: int,
+                             date1=None, date2=None, callback: CallbackQuery = None,
                              message: Message = None):
     try:
         if callback:
@@ -207,17 +214,24 @@ async def request_processing(raw_processed_urls, http_request_session: ClientSes
 
         progress_msg = await message.answer(
             f'Получено <u><b>{len(raw_processed_urls)}</b></u> URL-адресов. Сбор статистики...', parse_mode='html')
-        tasks = [ym_request.get_statistics(http_request_session, raw_url, raw_processed_urls[raw_url], date1=date1,
-                                           date2=date2) for
+        tasks = [ym_request.get_statistics(http_request_session, raw_url, raw_processed_urls[raw_url], date1, date2) for
                  raw_url in raw_processed_urls]
         result = await asyncio.gather(*tasks)
 
         filename = f"{username}_{datetime.datetime.today().strftime('%Y-%m-%d_%H-%M-%S')}.xlsx"
+        s3_file_name = f'bot_tg_urls_stats/{filename}'
         await progress_msg.edit_text('Подвожу итоги...')
         sum_stat_for_url = await ym_request.get_sum_statistics(raw_processed_urls.keys(),
                                                                raw_processed_urls.values(), date1, date2)
         await progress_msg.edit_text('Формирую ответ...')
         file: bytes = xlsx_writter(result, filename, sum_stat_for_url, header)
+        storage.upload_memory_file(file_name=s3_file_name, data=io.BytesIO(file), length=len(file))
+
+        async with async_session_maker() as session:
+            await session.execute(
+                update(RequestsLog).where(RequestsLog.id == request_id).values(s3_file_path=s3_file_name))
+            await session.commit()
+
         await progress_msg.delete()
         await bot.send_document(chat_id=message.chat.id, document=BufferedInputFile(file=file, filename=filename),
                                 caption=f'Обработка завершена успешно!\n\nОбработано <u><b>{len(raw_processed_urls)}</b></u> URL-адресов.',
@@ -234,7 +248,7 @@ async def request_processing(raw_processed_urls, http_request_session: ClientSes
             ' проблема повторяется, пожалуйста, обратитесь к администратору @antoxaSV'
         )
     except Exception as err:
-        await write_error_to_db(request_id, traceback.format_exc())
+        await write_error_to_db(request_id, traceback.format_exc(), unexpected=True)
         await message.answer(f'Произошла непредвиденная ошибка\n\n{str(err)[:4000]}')
 
 

@@ -1,7 +1,10 @@
-from sqlalchemy import Column, Integer, Boolean, DateTime, ForeignKey, BIGINT, TEXT, ARRAY, String
+import datetime
+
+import requests
+from sqlalchemy import Column, Integer, Boolean, DateTime, ForeignKey, BIGINT, TEXT, ARRAY, String, Date
 from database.db import Base, async_session_maker
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 import asyncio
 
@@ -15,6 +18,7 @@ class DomainCounter(Base):
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     domain_name = Column(TEXT(50), nullable=False)
     counter = Column(BIGINT, nullable=False)
+    created_at = Column(DateTime)
 
 
 class User(Base):
@@ -28,7 +32,7 @@ class User(Base):
     telegram_id = Column(BIGINT, nullable=True)
     username = Column(TEXT, nullable=False)
     active = Column(Boolean, default=True)
-    created_at = Column(DateTime)
+    created_at = Column(Date)
 
 
 class RequestsLog(Base):
@@ -43,5 +47,5 @@ class RequestsLog(Base):
     request = Column(TEXT(5000), nullable=False)
     error_msg = Column(TEXT, nullable=True)
     status = Column(String(5), nullable=False)
-    s3_file_path = Column(String(100), nullable=True)
+    s3_file_path = Column(TEXT, nullable=True)
     created_at = Column(DateTime, nullable=False)

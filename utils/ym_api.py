@@ -4,7 +4,7 @@ import datetime
 import os.path
 from datetime import timedelta
 from urllib.parse import urlparse
-from collections import namedtuple
+from collections import namedtuple, deque
 
 import requests
 from aiogram import Bot
@@ -22,29 +22,41 @@ statistic = namedtuple('Statistic', [
                        defaults=[0 for _ in range(8)])
 
 
-class YandexMetrikaRateLimiter:
-    def __init__(self, max_requests_per_second: int = 1):
-        self.max_requests_per_second = max_requests_per_second
-        self.min_interval = 1.0 / max_requests_per_second
-        self.last_request_time = 0
-        self.lock = asyncio.Lock()
-        asyncio.Semaphore(5)
+class GlobalRateLimiter:
+    _instance = None
 
-    async def acquire(self):
-        """Ожидает разрешения на выполнение запроса"""
-        async with self.lock:
-            current_time = time.time()
-            time_since_last = current_time - self.last_request_time
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._instance.requests = deque()
+            cls._instance.lock = asyncio.Lock()
+        return cls._instance
 
-            if time_since_last < self.min_interval:
-                wait_time = self.min_interval - time_since_last
-                await asyncio.sleep(wait_time)
+    async def acquire(self, max_requests=5, period=1.0):
+        while True:
+            async with self.lock:
+                current_time = time.time()
 
-            self.last_request_time = time.time()
+                # Удаляем старые запросы
+                while self.requests and self.requests[0] <= current_time - period:
+                    self.requests.popleft()
+
+                # Проверяем лимит
+                if len(self.requests) < max_requests:
+                    self.requests.append(current_time)
+                    return  # Выходим когда добавляем запрос
+
+                # Если лимит превышен, вычисляем время ожидания
+                oldest_timestamp = self.requests[0]
+                sleep_time = period - (current_time - oldest_timestamp)
+
+            # Ждем ВНЕ блокировки, чтобы другие корутины могли работать
+            if sleep_time > 0:
+                await asyncio.sleep(sleep_time)
 
 
-# Глобальный лимитер для всего приложения
-metrika_limiter = YandexMetrikaRateLimiter(max_requests_per_second=5)
+# Глобальный лимитер
+global_limiter = GlobalRateLimiter()
 
 
 class YMRequest:
@@ -67,19 +79,19 @@ class YMRequest:
         # сессия базы данных
         async with async_session_maker() as session:
             domain_counter_obj = await session.execute(
-                select(DomainCounter.counter).where(DomainCounter.domain_name == netloc))
+                select(DomainCounter.counter, DomainCounter.created_at).where(DomainCounter.domain_name == netloc))
         # получаем счётчик по домену
-        counter = domain_counter_obj.scalar()
-        return counter
+        counter, created_at = domain_counter_obj.all()[0]
+        return counter, created_at
 
     async def _get_counters(self, raw_urls: list[str]):
-        # доменты из сырых URL
+        # домены из сырых URL
         netlocs = map(lambda url: urlparse(url).netloc, raw_urls)
 
         async with async_session_maker() as session:
-            smtm = select(DomainCounter.counter).where(DomainCounter.domain_name.in_(netlocs))
+            smtm = select(DomainCounter.counter, DomainCounter.created_at).where(DomainCounter.domain_name.in_(netlocs))
             domain_counters_objects = await session.execute(smtm)
-        return domain_counters_objects.scalars().all()
+        return domain_counters_objects.all()
 
     def statistic_placeholder(self, stat, raw_url=None):
         stat = statistic(
@@ -88,19 +100,25 @@ class YMRequest:
             bounceRate=round(stat[5], 2), newUsers=round(stat[6], 2))
         return stat
 
-    async def get_statistics(self, session, raw_url, cleaned_url, date1='2021-04-12', date2=datetime.date.today()):
-        await metrika_limiter.acquire()
-        counter_id = await self._get_counter(raw_url)
+    async def get_statistics(self, session, raw_url, cleaned_url, date1, date2):
+        await global_limiter.acquire()
+        counter_id, created_at = await self._get_counter(raw_url)
+
+        # если дата начала периода < даты создания счётчика, берём дату создания счётчика
+        if date1 is None or datetime.datetime.strptime(date1, '%Y-%m-%d').date() < created_at:
+            date1 = str(created_at)
+        if date2 is None:
+            date2 = str(datetime.date.today())
+
         parameters = {
             'id': counter_id,
             'metrics': 'ym:s:visits,ym:s:users,ym:s:pageviews,ym:s:pageDepth,ym:s:avgVisitDurationSeconds,ym:s:bounceRate,ym:s:percentNewVisitors',
             'filters': f"EXISTS(ym:pv:URL=*'*{cleaned_url}*')",
             'date1': date1,
-            'date2': str(date2),
+            'date2': date2,
             'accuracy': 'full'
         }
-        # stat = requests.get(self.api_url, headers=self.headers, params=parameters)
-        # stat = stat.json().get('data')
+
         async with self.semaphore:
             async with session.get(self.api_url, headers=self.headers, params=parameters) as response:
                 response.raise_for_status()
@@ -121,8 +139,15 @@ class YMRequest:
         return stat
 
     async def get_sum_statistics(self, raw_urls, cleaned_urls, date1, date2):
-        counters = await self._get_counters(raw_urls)
+        counters_data = await self._get_counters(raw_urls)
+        counters = map(lambda t: t[0], counters_data)
+        created_at = map(lambda t: t[1], counters_data)
         counter_ids = ','.join(counters)
+        min_date = min(created_at)
+        if date1 is None or datetime.datetime.strptime(date1, '%Y-%m-%d').date() < min_date:
+            date1 = str(min_date)
+        if date2 is None:
+            date2 = str(datetime.date.today())
         filters = ' OR '.join([f"EXISTS(ym:pv:URL=*'*{cleaned_url}*')" for cleaned_url in cleaned_urls])
         parameters = {
             'ids': counter_ids,
