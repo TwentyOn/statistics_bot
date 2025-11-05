@@ -1,14 +1,10 @@
 import asyncio
-import csv
 import datetime
-import os.path
 from datetime import timedelta
 from urllib.parse import urlparse
 from collections import namedtuple, deque
 
 import requests
-from aiogram import Bot
-from aiogram.types import Message
 from sqlalchemy import select
 from aiohttp import ClientSession
 import time
@@ -127,7 +123,11 @@ class YMRequest:
 
         async with self.semaphore:
             async with session.get(self.api_url, headers=self.headers, params=parameters) as response:
-                response.raise_for_status()
+                if response.status == 400:
+                    raise BadRequestError(response.json().get('message'))
+                elif response.status == 429:
+                    raise BadRequestError(
+                        'Ошибка полученная данных с Яндекс Метрики. Попробуйте повторить запрос позднее')
                 stat = await response.json()
                 stat = stat.get('data')
 

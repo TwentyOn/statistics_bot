@@ -30,5 +30,5 @@ class BadRequestError(Exception):
                        '\n\nДля получения справки по формирование запроса воспользуйтесь командой /help'):
         self.message = message
 
-    def __str(self):
+    def __str__(self):
         return self.message
