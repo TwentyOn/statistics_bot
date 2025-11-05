@@ -26,9 +26,9 @@ class MaxCountUrlError(Exception):
 
 
 class BadRequestError(Exception):
-    def __init__(self):
-        self.message = 'В полученном запросе не найдено не одного URL-адреса.' \
-                       '\n\nДля получения справки по формирование запроса воспользуйтесь командой /help'
+    def __init__(self, message='В полученном запросе не найдено не одного URL-адреса.' \
+                       '\n\nДля получения справки по формирование запроса воспользуйтесь командой /help'):
+        self.message = message
 
     def __str(self):
         return self.message

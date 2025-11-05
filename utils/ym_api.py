@@ -15,6 +15,7 @@ import time
 
 from database.db import async_session_maker, connection
 from database.models import DomainCounter
+from utils.custom_exceptions import BadRequestError
 
 # namedtuple (по-умолчанию все параметры=0)
 statistic = namedtuple('Statistic', [
@@ -81,7 +82,12 @@ class YMRequest:
             domain_counter_obj = await session.execute(
                 select(DomainCounter.counter, DomainCounter.created_at).where(DomainCounter.domain_name == netloc))
         # получаем счётчик по домену
-        counter, created_at = domain_counter_obj.all()[0]
+        data = domain_counter_obj.first()
+        if not data:
+            raise BadRequestError(
+                'Не удалось найти счётчик Яндекс Метрики по домену. Проверьте корректность введеного URL.'
+            )
+        counter, created_at = data
         return counter, created_at
 
     async def _get_counters(self, raw_urls: list[str]):
