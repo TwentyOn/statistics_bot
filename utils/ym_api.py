@@ -81,7 +81,7 @@ class YMRequest:
         data = domain_counter_obj.first()
         if not data:
             raise BadRequestError(
-                'Не удалось найти счётчик Яндекс Метрики по домену. Проверьте корректность введеного URL.'
+                f'Не удалось найти счётчик Яндекс Метрики по домену: {netloc}.'
             )
         counter, created_at = data
         return counter, created_at
@@ -124,10 +124,13 @@ class YMRequest:
         async with self.semaphore:
             async with session.get(self.api_url, headers=self.headers, params=parameters) as response:
                 if response.status == 400:
-                    raise BadRequestError(response.json().get('message'))
+                    error = await response.json()
+                    error = error.get('message')
+                    raise BadRequestError(f'Не удалось получить данные от API Яндекс Метрики: {error}')
                 elif response.status == 429:
-                    raise BadRequestError(
-                        'Ошибка полученная данных с Яндекс Метрики. Попробуйте повторить запрос позднее')
+                    error = await response.json()
+                    error = error.get('message')
+                    raise BadRequestError(f'Не удалось получить данные от API Яндекс Метрики: {error}')
                 stat = await response.json()
                 stat = stat.get('data')
 

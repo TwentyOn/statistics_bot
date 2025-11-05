@@ -25,9 +25,6 @@ def urls_processing(raw_urls: list) -> dict:
             raise IncorrectUrl(f'Получен некорректный url-адрес: <u>{raw_url}</u>')
 
         process_url = netloc + path
-        if not process_url.endswith('/'):
-            process_url += '/'
-
         processed_urls.append(process_url)
 
     raw_processed_urls = dict(zip(raw_urls, processed_urls))

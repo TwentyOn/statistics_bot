@@ -1,10 +1,7 @@
-import datetime
-
-import requests
 from sqlalchemy import Column, Integer, Boolean, DateTime, ForeignKey, BIGINT, TEXT, ARRAY, String, Date
 from database.db import Base, async_session_maker
 
-from sqlalchemy import select, update
+from sqlalchemy import select, update, delete
 
 import asyncio
 
