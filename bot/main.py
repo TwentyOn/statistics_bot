@@ -3,6 +3,7 @@ import datetime
 import io
 import traceback
 from contextlib import asynccontextmanager
+import logging
 
 import aiohttp
 from aiogram import Bot, Dispatcher, F
@@ -77,29 +78,23 @@ class SessionManager:
             # Задача отменена - значит появились новые запросы
             pass
 
-    async def force_close(self):
-        """Принудительное закрытие сессии"""
-        async with self._lock:
-            if self._close_task:
-                self._close_task.cancel()
-            if self._session and not self._session.closed:
-                await self._session.close()
-                self._session = None
-                print("🛑 Сессия принудительно закрыта")
 
-
-# Глобальный менеджер сессий
+# Глобальный менеджер сессий для всех пользователей
 session_manager = SessionManager()
 
 
 class States(StatesGroup):
-    waiting_urls = State()
     waiting_two_dates = State()
     waiting_one_date = State()
     waiting_response = State()
 
 
 async def check_user(user_tg_id):
+    """
+    Проверка наличия доступа (пользователя) в БД
+    :param user_tg_id: ID пользователя в телеграм
+    :return: user_obj
+    """
     async with async_session_maker() as session:
         result = await session.execute(select(User).where(User.telegram_id == user_tg_id, User.active == True))
     return result.scalar()
@@ -132,8 +127,66 @@ async def start_handler(message: Message):
     )
 
 
+@dp.message(F.text.strip().startswith('https://'))
+async def get_message(message: Message, state: FSMContext):
+    """
+    Функция получает URL-адрес(а) от пользователя и запршивает интервал дат
+    :param message:
+    :param state:
+    :return:
+    """
+    try:
+        user = await check_user(message.from_user.id)
+        # если пользователя нет в БД, не берем его запрос в обработку
+        if not bool(user):
+            err_msg = f'К сожалению, у вас нет доступа к этому боту. Пожалуйста, обратитесь к администратору @antoxaSV'
+            raise NotAccessUserError(err_msg)
+
+        # заносим запрос пользователя в лог запросов
+        async with async_session_maker() as session:
+            request_id = await session.execute(insert(RequestsLog).values(
+                user_id=user.id, request=message.text, status='ok').returning(RequestsLog.id))
+            request_id = request_id.scalar_one()
+            await session.commit()
+
+        # обрабатываем полученные URL
+        raw_processed_urls = await extract_urls_from_message(message.text)
+
+        await state.update_data(user_request=raw_processed_urls, request_id=request_id)
+
+        button_1 = InlineKeyboardButton(text='Дата начала - по сегодняшний день', callback_data='date_from-today')
+        button_2 = InlineKeyboardButton(text='Дата начала - дата окончания', callback_data='date_from-date_to')
+        button_3 = InlineKeyboardButton(text="За всё время", callback_data="all_time_statistics")
+        cancel_button = InlineKeyboardButton(text='Отмена', callback_data='cancel')
+        # Создаем объект инлайн-клавиатуры
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[[button_1], [button_2], [button_3], [cancel_button]])
+        await message.answer('Задайте временной интервал сбора статистики:', reply_markup=keyboard, parse_mode='html')
+
+    except IncorrectUrl as err:
+        await message.answer(str(err), parse_mode='html')
+        await write_error_to_db(request_id, traceback.format_exc())
+
+    except NotAccessUserError as err:
+        await message.answer(str(err))
+        await write_error_to_db(request_id, traceback.format_exc())
+
+    except MaxCountUrlError as err:
+        await message.answer(str(err), parse_mode='html')
+        await write_error_to_db(request_id, traceback.format_exc())
+
+    except Exception as err:
+        await write_error_to_db(request_id, traceback.format_exc(), unexpected=True)
+        await message.answer(f'Непредвиденная ошибка.\n\n{str(err)[:4000]}')
+
+
 @dp.message(States.waiting_one_date)
 async def get_one_date(message: Message, state: FSMContext):
+    """
+    Обработка состояния, при котором пользователь выбрал интервал "дата начала - по сегодняшний день"
+    :param message:
+    :param state:
+    :return:
+    """
     date_format = '%d.%m.%Y'
     data = await state.get_data()
     request_id = data.get('request_id')
@@ -159,6 +212,12 @@ async def get_one_date(message: Message, state: FSMContext):
 
 @dp.message(States.waiting_two_dates)
 async def get_two_dates(message: Message, state: FSMContext):
+    """
+    Обработка состояния, при котором пользователь выбрал интервал "дата начала - дата окончания"
+    :param message:
+    :param state:
+    :return:
+    """
     date_format = '%d.%m.%Y'
     data = await state.get_data()
     request_id = data.get('request_id')
@@ -188,51 +247,14 @@ async def get_two_dates(message: Message, state: FSMContext):
         await message.answer('Произошла непредвиденная ошибка.')
 
 
-@dp.message(F.text.strip().startswith('https://'))
-async def get_message(message: Message, state: FSMContext):
-    try:
-        user = await check_user(message.from_user.id)
-        # если пользователя нет в БД, не берем его запрос в обработку
-        if not bool(user):
-            err_msg = f'К сожалению, у вас нет доступа к этому боту. Пожалуйста, обратитесь к администратору @antoxaSV'
-            raise NotAccessUserError(err_msg)
-
-        async with async_session_maker() as session:
-            request_id = await session.execute(insert(RequestsLog).values(
-                user_id=user.id, request=message.text, status='ok').returning(RequestsLog.id))
-            request_id = request_id.scalar_one()
-            await session.commit()
-
-        raw_processed_urls = await extract_urls_from_message(message.text)
-
-        await state.update_data(user_request=raw_processed_urls, request_id=request_id)
-
-        button_1 = InlineKeyboardButton(text='Дата начала - по сегодняшний день', callback_data='date_from-today')
-        button_2 = InlineKeyboardButton(text='Дата начала - дата окончания', callback_data='date_from-date_to')
-        button_3 = InlineKeyboardButton(text="За всё время", callback_data="all_time_statistics")
-        # Создаем объект инлайн-клавиатуры
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[[button_1], [button_2], [button_3]])
-        await message.answer('Задайте временной интервал сбора статистики:', reply_markup=keyboard)
-
-    except IncorrectUrl as err:
-        await message.answer(str(err), parse_mode='html')
-        await write_error_to_db(request_id, traceback.format_exc())
-
-    except NotAccessUserError as err:
-        await message.answer(str(err))
-        await write_error_to_db(request_id, traceback.format_exc())
-
-    except MaxCountUrlError as err:
-        await message.answer(str(err), parse_mode='html')
-        await write_error_to_db(request_id, traceback.format_exc())
-
-    except Exception as err:
-        await write_error_to_db(request_id, traceback.format_exc(), unexpected=True)
-        await message.answer(f'Непредвиденная ошибка.\n\n{str(err)[:4000]}')
-
-
 @dp.callback_query(F.data == 'all_time_statistics')
 async def stat_all_time(callback: CallbackQuery, state: FSMContext):
+    """
+    Обработка состояния, при котором пользователь выбрал интервал "за всё время"
+    :param callback:
+    :param state:
+    :return: None
+    """
     data = await state.get_data()
     raw_processed_urls = data.get('user_request')
 
@@ -241,12 +263,17 @@ async def stat_all_time(callback: CallbackQuery, state: FSMContext):
         await request_processing(raw_processed_urls=raw_processed_urls, callback=callback,
                                  http_request_session=http_request_session, header=header,
                                  state=state)
-    print('состояние очищено')
     await state.clear()
 
 
 @dp.callback_query(F.data == 'date_from-today')
 async def date_from_today(callback: CallbackQuery, state: FSMContext):
+    """
+    Метод инициирует сбор статистики с даты начала по текущий день
+    :param callback:
+    :param state:
+    :return:
+    """
     await callback.message.delete()
     await callback.message.answer('Введите дату начала периода в формате DD.MM.YYYY')
     await state.set_state(States.waiting_one_date)
@@ -254,18 +281,48 @@ async def date_from_today(callback: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data == 'date_from-date_to')
 async def date_from_date_to(callback: CallbackQuery, state: FSMContext):
+    """
+    Метод инициирует сбор статистики с даты начала по дату окончания
+    :param callback:
+    :param state:
+    :return:
+    """
     await callback.message.delete()
     await callback.message.answer("Введите дату начала и дату окончания периода в формате DD.MM.YYYY-DD.MM.YYYY")
     await state.set_state(States.waiting_two_dates)
 
 
+@dp.callback_query(F.data == 'cancel')
+async def cancel_inp(callback: CallbackQuery, state: FSMContext):
+    """
+    Обработка нажатия inline-кнопки "Отмена"
+    :param callback:
+    :param state:
+    :return:
+    """
+    # возврат пользователя в исходное состояние
+    await state.clear()
+    await callback.message.delete()
+    await callback.message.answer('Отмена ввода.')
+
+
 @dp.message(States.waiting_response)
 async def waiting_response_message(message: Message):
+    """
+    Запрещаем пользователю в данном состоянии выполнять запросы
+    :param message:
+    :return:
+    """
     await message.answer('Вы не можете отправлять новые запросы, пока идёт выполнение предыдущего.')
 
 
 @dp.message()
 async def other_message(message: Message):
+    """
+    Обработка отличных от URL-адреса запросов
+    :param message:
+    :return:
+    """
     await message.answer('Похоже, Ваш запрос не является корректным URL-адресом.' \
                          ' Пожалуйста, проверьте правильность формирования запроса.' \
                          '\n\nПример корректного URL: https://um.mos.ru/quizzes/kvest-kosmonavtiki/')
@@ -274,6 +331,20 @@ async def other_message(message: Message):
 async def request_processing(raw_processed_urls, http_request_session: ClientSession, header,
                              date1=None, date2=None, callback: CallbackQuery = None,
                              message: Message = None, state: FSMContext = None):
+    """
+    Функция запускает сбор статистики для полученных URL-адресов в асинхронном режиме, формирует файл, отправляет файл
+    пользователю и в S3-хранилище
+    :param raw_processed_urls:
+    :param http_request_session:
+    :param header: заголовок excel-таблицы
+    :param date1: дата начала интервала
+    :param date2: дата окончания интервала
+    :param callback: объект сообщения если запрос пришел из callback-функции
+    :param message: объект сообщения если запрос пришел из обработчика состояния
+    :param state:
+    :return:
+    """
+    # переход в состояние ожидания получения ответа на запрос
     await state.set_state(States.waiting_response)
     data = await state.get_data()
     request_id = data.get('request_id')
@@ -288,7 +359,7 @@ async def request_processing(raw_processed_urls, http_request_session: ClientSes
         ym_request = YMRequest(ym_token)
 
         progress_msg = await message.answer(
-            f'Получено <u><b>{len(raw_processed_urls)}</b></u> URL-адресов. Сбор статистики...', parse_mode='html')
+            f'Получено <u><b>{len(raw_processed_urls)}</b></u> URL. Сбор статистики...', parse_mode='html')
         tasks = [ym_request.get_statistics(http_request_session, raw_url, raw_processed_urls[raw_url], date1, date2) for
                  raw_url in raw_processed_urls]
         result = await asyncio.gather(*tasks)
@@ -309,7 +380,7 @@ async def request_processing(raw_processed_urls, http_request_session: ClientSes
 
         await progress_msg.delete()
         await bot.send_document(chat_id=message.chat.id, document=BufferedInputFile(file=file, filename=filename),
-                                caption=f'Обработка завершена успешно!\n\nОбработано <u><b>{len(raw_processed_urls)}</b></u> URL-адресов.',
+                                caption=f'Обработка завершена успешно!\n\nОбработано <u><b>{len(raw_processed_urls)}</b></u> URL.',
                                 parse_mode='html')
 
     except BadRequestError as err:

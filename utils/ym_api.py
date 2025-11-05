@@ -1,5 +1,6 @@
 import asyncio
 import datetime
+import re
 from datetime import timedelta
 from urllib.parse import urlparse
 from collections import namedtuple, deque
@@ -70,17 +71,18 @@ class YMRequest:
         self.token = oauth_token
         self.api_url = 'https://api-metrika.yandex.net/stat/v1/data'
         self.headers = {'Authorization': self.token}
+        # минимальная дата начала интервала сбора статистики
         self.min_date = datetime.date(2020, 1, 1)
 
     async def _get_counter(self, raw_url: str):
         # домен
-        netloc = urlparse(raw_url).netloc
+        netloc = re.sub('www.', '', urlparse(raw_url).netloc)
         # сессия базы данных
         async with async_session_maker() as session:
             domain_counter_obj = await session.execute(
                 select(DomainCounter.counter).where(DomainCounter.domain_name == netloc))
-        # получаем счётчик по домену
-            counter = domain_counter_obj.scalar_one()
+            # получаем счётчик по домену
+            counter = domain_counter_obj.scalar_one_or_none()
         if not counter:
             raise BadRequestError(
                 f'Не удалось найти счётчик Яндекс Метрики по домену: {netloc}.'
@@ -89,14 +91,13 @@ class YMRequest:
 
     async def _get_counters(self, raw_urls: list[str]):
         # домены из сырых URL
-        netlocs = map(lambda url: urlparse(url).netloc, raw_urls)
+        netlocs = map(lambda url: re.sub('www.', '', urlparse(url).netloc), raw_urls)
 
         async with async_session_maker() as session:
             smtm = select(DomainCounter.counter).where(DomainCounter.domain_name.in_(netlocs))
             domain_counters_objects = await session.execute(smtm)
-            counters = domain_counters_objects.scalars().all()
-        print(counters)
-        return counters
+            counters_dates = domain_counters_objects.scalars().all()
+        return counters_dates
 
     def statistic_placeholder(self, stat, raw_url=None):
         stat = statistic(
@@ -109,7 +110,7 @@ class YMRequest:
         # await global_limiter.acquire()
         counter_id = await self._get_counter(raw_url)
 
-        # если дата начала периода < даты создания счётчика, берём дату создания счётчика
+        # если дата начала периода < минимально установленого порога, берём дату установленного порога
         if date1 is None or datetime.datetime.strptime(date1, '%Y-%m-%d').date() < self.min_date:
             date1 = str(self.min_date)
         if date2 is None:
@@ -123,24 +124,33 @@ class YMRequest:
             'date2': date2,
             'accuracy': 'full'
         }
-        print('single', parameters)
+        print(parameters)
 
         async with self.semaphore:
-            print(datetime.datetime.now().time(), 'запрос', cleaned_url)
-            async with session.get(self.api_url, headers=self.headers, params=parameters) as response:
-                if response.status == 400:
+            status = None
+            message = None
+            # 3 попытки получить данные с яндекс метрики
+            for _ in range(3):
+                print('pop', _)
+                async with session.get(self.api_url, headers=self.headers, params=parameters) as response:
+                    # если данные получены успешно
+                    if response.status == 200:
+                        print('seccues')
+                        stat = await response.json()
+                        stat = stat.get('data')
+                        status = None
+                        message = None
+                        break
+                    print('denied')
+                    status = response.status
                     error = await response.json()
                     message = error.get('message')
-                    print(error.get('status_code'))
-                    raise BadRequestError(f'Не удалось получить данные от API Яндекс Метрики: {message}')
-                elif response.status == 429:
-                    error = await response.json()
-                    message = error.get('message')
-                    print(error.get('status_code'))
-                    raise BadRequestError(f'Не удалось получить данные от API Яндекс Метрики: {message}')
-                stat = await response.json()
-                stat = stat.get('data')
-        print(datetime.datetime.now().time(), 'ответ', cleaned_url)
+            if status == 400:
+                raise BadRequestError(
+                    f'Не удалось получить данные от API Яндекс Метрики: {message}. Попробуйте повторить запрос.')
+            elif status == 429:
+                raise BadRequestError(
+                    f'Не удалось получить данные от API Яндекс Метрики: {message}. Попробуйте повторить запрос')
         if stat:
             # т.к группировки не используются всегда берём первый элемент из data
             stat = stat[0]['metrics']
@@ -155,6 +165,14 @@ class YMRequest:
         return stat
 
     async def get_sum_statistics(self, raw_urls, cleaned_urls, date1, date2):
+        """
+        Метод для получения итоговой суммы статистики для всех полученных URL
+        :param raw_urls:
+        :param cleaned_urls:
+        :param date1:
+        :param date2:
+        :return:
+        """
         counters = await self._get_counters(raw_urls)
         counter_ids = ','.join(counters)
         if date1 is None or datetime.datetime.strptime(date1, '%Y-%m-%d').date() < self.min_date:
@@ -170,15 +188,24 @@ class YMRequest:
             'date2': str(date2),
             'accuracy': 'full'
         }
-        print('sum', parameters)
-        stat = requests.get(self.api_url, headers=self.headers, params=parameters)
-        stat = stat.json().get('data')
-        if stat:
-            # т.к группировки не используются всегда берём первый элемент из data
-            stat = stat[0]['metrics']
-            # передаём статистику для заполнения namedtuple
-            stat = self.statistic_placeholder(stat)
-        else:
-            # иначе берем namedtuple по-умолчанию
-            stat = statistic()
-        return stat
+        message = None
+        # 3 попытки получить данные с яндекс метрики
+        for _ in range(3):
+            stat = requests.get(self.api_url, headers=self.headers, params=parameters)
+            if stat.status_code == 200:
+                stat = stat.json().get('data')
+                if stat:
+                    # т.к группировки не используются всегда берём первый элемент из data
+                    stat = stat[0]['metrics']
+                    # передаём статистику для заполнения namedtuple
+                    stat = self.statistic_placeholder(stat)
+                else:
+                    # иначе берем namedtuple по-умолчанию
+                    stat = statistic()
+                return stat
+            message = stat.json().get('message')
+        raise BadRequestError(
+            f'Не удалось получить итоговые данные от Яндекс Метрики.' \
+            f'\n\n error_message:{message}' \
+            '\n\nВозможное решение: уменьшите период формирования статистики или попробуйте позднее.'
+        )

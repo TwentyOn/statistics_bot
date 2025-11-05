@@ -5,6 +5,7 @@ from utils.custom_exceptions import MaxCountUrlError, IncorrectUrl, BadRequestEr
 
 
 async def extract_urls_from_message(text: str) -> dict:
+    # заменяем разделители на пробелы и нарезаем строку на отдельные части
     url_list = re.sub(r'[ ,\n]', ' ', text).split()
     if len(url_list) > 20:
         raise MaxCountUrlError(len(url_list))
@@ -19,7 +20,10 @@ def urls_processing(raw_urls: list) -> dict:
 
     for raw_url in raw_urls:
         parse_url = urlparse(raw_url)
-        scheme, netloc, path = parse_url.scheme, parse_url.netloc, parse_url.path
+        scheme = parse_url.scheme
+        # удаляем из доменов www
+        netloc = re.sub('www.', '', parse_url.netloc)
+        path = parse_url.path
 
         if not all((scheme, netloc, path)):
             raise IncorrectUrl(f'Получен некорректный url-адрес: <u>{raw_url}</u>')
