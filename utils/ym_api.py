@@ -6,7 +6,6 @@ from collections import namedtuple, deque
 
 import requests
 from sqlalchemy import select
-from aiohttp import ClientSession
 import time
 
 from database.db import async_session_maker, connection
@@ -19,41 +18,43 @@ statistic = namedtuple('Statistic', [
                        defaults=[0 for _ in range(8)])
 
 
-class GlobalRateLimiter:
-    _instance = None
-
-    def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-            cls._instance.requests = deque()
-            cls._instance.lock = asyncio.Lock()
-        return cls._instance
-
-    async def acquire(self, max_requests=5, period=1.0):
-        while True:
-            async with self.lock:
-                current_time = time.time()
-
-                # Удаляем старые запросы
-                while self.requests and self.requests[0] <= current_time - period:
-                    self.requests.popleft()
-
-                # Проверяем лимит
-                if len(self.requests) < max_requests:
-                    self.requests.append(current_time)
-                    return  # Выходим когда добавляем запрос
-
-                # Если лимит превышен, вычисляем время ожидания
-                oldest_timestamp = self.requests[0]
-                sleep_time = period - (current_time - oldest_timestamp)
-
-            # Ждем ВНЕ блокировки, чтобы другие корутины могли работать
-            if sleep_time > 0:
-                await asyncio.sleep(sleep_time)
-
-
-# Глобальный лимитер
-global_limiter = GlobalRateLimiter()
+# class GlobalRateLimiter:
+#     _instance = None
+#     _lock = asyncio.Lock()
+#
+#     def __new__(cls):
+#         if cls._instance is None:
+#             cls._instance = super().__new__(cls)
+#             cls._instance.requests = deque()
+#             cls._instance.max_requests = 5  # 5 запросов в секунду
+#             cls._instance.period = 1  # 1 секунда
+#         return cls._instance
+#
+#     async def acquire(self):
+#         async with self._lock:
+#             current_time = time.time()
+#
+#             # Удаляем запросы старше 1 секунды
+#             while self.requests and self.requests[0] <= current_time - self.period:
+#                 self.requests.popleft()
+#
+#             # Если лимит превышен, ждем
+#             if len(self.requests) >= self.max_requests:
+#                 oldest_time = self.requests[0]
+#                 sleep_time = self.period - (current_time - oldest_time)
+#                 if sleep_time > 0:
+#                     await asyncio.sleep(sleep_time)
+#                     current_time = time.time()
+#                     # После сна снова очищаем старые запросы
+#                     while self.requests and self.requests[0] <= current_time - self.period:
+#                         self.requests.popleft()
+#
+#             # Добавляем текущий запрос
+#             self.requests.append(current_time)
+#
+#
+# # Глобальный экземпляр
+# global_limiter = GlobalRateLimiter()
 
 
 class YMRequest:
@@ -103,7 +104,7 @@ class YMRequest:
         return stat
 
     async def get_statistics(self, session, raw_url, cleaned_url, date1, date2):
-        await global_limiter.acquire()
+        # await global_limiter.acquire()
         counter_id, created_at = await self._get_counter(raw_url)
 
         # если дата начала периода < даты создания счётчика, берём дату создания счётчика
@@ -122,15 +123,18 @@ class YMRequest:
         }
 
         async with self.semaphore:
+            print(datetime.datetime.now().time(), 'выполняю запрос')
             async with session.get(self.api_url, headers=self.headers, params=parameters) as response:
                 if response.status == 400:
                     error = await response.json()
-                    error = error.get('message')
-                    raise BadRequestError(f'Не удалось получить данные от API Яндекс Метрики: {error}')
+                    message = error.get('message')
+                    print(error.get('status_code'))
+                    raise BadRequestError(f'Не удалось получить данные от API Яндекс Метрики: {message}')
                 elif response.status == 429:
                     error = await response.json()
-                    error = error.get('message')
-                    raise BadRequestError(f'Не удалось получить данные от API Яндекс Метрики: {error}')
+                    message = error.get('message')
+                    print(error.get('status_code'))
+                    raise BadRequestError(f'Не удалось получить данные от API Яндекс Метрики: {message}')
                 stat = await response.json()
                 stat = stat.get('data')
 

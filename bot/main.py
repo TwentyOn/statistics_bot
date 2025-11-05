@@ -2,7 +2,9 @@ import asyncio
 import datetime
 import io
 import traceback
+from contextlib import asynccontextmanager
 
+import aiohttp
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery, \
     BufferedInputFile
@@ -28,10 +30,73 @@ bot = Bot(token=tg_token)
 dp = Dispatcher()
 
 
+class SessionManager:
+    def __init__(self):
+        self._session = None
+        self._active_requests = 0
+        self._lock = asyncio.Lock()
+        self._close_task = None
+
+    @asynccontextmanager
+    async def get_session(self):
+        """Контекстный менеджер для сессии с подсчетом ссылок"""
+        # Увеличиваем счетчик активных запросов
+        async with self._lock:
+            self._active_requests += 1
+            if self._session is None or self._session.closed:
+                self._session = aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit_per_host=5, limit=5))
+                print(f"✅ Сессия создана. Активных запросов: {self._active_requests}")
+
+            # Отменяем задачу закрытия если она есть
+            if self._close_task:
+                self._close_task.cancel()
+                self._close_task = None
+
+        try:
+            yield self._session
+        finally:
+            # Уменьшаем счетчик и планируем закрытие
+            async with self._lock:
+                self._active_requests -= 1
+                print(f"📊 Активных запросов: {self._active_requests}")
+
+                if self._active_requests == 0 and self._session and not self._session.closed:
+                    # Планируем закрытие через 5 секунд
+                    self._close_task = asyncio.create_task(self._delayed_close())
+
+    async def _delayed_close(self):
+        """Закрывает сессию через 5 секунд если нет активных запросов"""
+        try:
+            await asyncio.sleep(5)  # Ждем 5 секунд
+            async with self._lock:
+                if self._active_requests == 0 and self._session and not self._session.closed:
+                    await self._session.close()
+                    self._session = None
+                    print("❌ Сессия закрыта (нет активных запросов)")
+        except asyncio.CancelledError:
+            # Задача отменена - значит появились новые запросы
+            pass
+
+    async def force_close(self):
+        """Принудительное закрытие сессии"""
+        async with self._lock:
+            if self._close_task:
+                self._close_task.cancel()
+            if self._session and not self._session.closed:
+                await self._session.close()
+                self._session = None
+                print("🛑 Сессия принудительно закрыта")
+
+
+# Глобальный менеджер сессий
+session_manager = SessionManager()
+
+
 class States(StatesGroup):
     waiting_urls = State()
     waiting_two_dates = State()
     waiting_one_date = State()
+    waiting_response = State()
 
 
 async def check_user(user_tg_id):
@@ -80,10 +145,10 @@ async def get_one_date(message: Message, state: FSMContext):
 
         header = f'Статистика за период с {date1.strftime("%d.%m.%Y")} по {date2.strftime("%d.%m.%Y")}'
 
-        async with ClientSession() as http_client_session:
+        async with session_manager.get_session() as http_client_session:
             await request_processing(raw_processed_urls=raw_processing_urls, http_request_session=http_client_session,
                                      date1=str(date1), date2=str(date2), header=header, message=message,
-                                     request_id=data.get('request_id'))
+                                     state=state)
         await state.clear()
     except ValueError:
         await message.answer('Некорректный формат даты')
@@ -110,10 +175,11 @@ async def get_two_dates(message: Message, state: FSMContext):
             await message.answer(f'Дата окончания периода не может кончаться позже сегодняшней даты.')
         else:
             header = f'Статистика за период с {date1.strftime("%d.%m.%Y")} по {date2.strftime("%d.%m.%Y")}'
-            async with ClientSession() as http_client_session:
-                await request_processing(raw_processed_urls=raw_processed_urls, http_request_session=http_client_session,
+            async with session_manager.get_session() as http_client_session:
+                await request_processing(raw_processed_urls=raw_processed_urls,
+                                         http_request_session=http_client_session,
                                          date1=str(date1), date2=str(date2), header=header, message=message,
-                                         request_id=data.get('request_id'))
+                                         state=state)
             await state.clear()
     except ValueError as err:
         await message.answer('Некорректный формат даты.')
@@ -171,10 +237,11 @@ async def stat_all_time(callback: CallbackQuery, state: FSMContext):
     raw_processed_urls = data.get('user_request')
 
     header = f'Статистика на {datetime.date.today().strftime("%d.%m.%Y")}'
-    async with ClientSession() as http_request_session:
+    async with session_manager.get_session() as http_request_session:
         await request_processing(raw_processed_urls=raw_processed_urls, callback=callback,
                                  http_request_session=http_request_session, header=header,
-                                 request_id=data.get('request_id'))
+                                 state=state)
+    print('состояние очищено')
     await state.clear()
 
 
@@ -192,6 +259,11 @@ async def date_from_date_to(callback: CallbackQuery, state: FSMContext):
     await state.set_state(States.waiting_two_dates)
 
 
+@dp.message(States.waiting_response)
+async def waiting_response_message(message: Message):
+    await message.answer('Вы не можете отправлять новые запросы, пока идёт выполнение предыдущего.')
+
+
 @dp.message()
 async def other_message(message: Message):
     await message.answer('Похоже, Ваш запрос не является корректным URL-адресом.' \
@@ -199,9 +271,12 @@ async def other_message(message: Message):
                          '\n\nПример корректного URL: https://um.mos.ru/quizzes/kvest-kosmonavtiki/')
 
 
-async def request_processing(raw_processed_urls, http_request_session: ClientSession, header, request_id: int,
+async def request_processing(raw_processed_urls, http_request_session: ClientSession, header,
                              date1=None, date2=None, callback: CallbackQuery = None,
-                             message: Message = None):
+                             message: Message = None, state: FSMContext = None):
+    await state.set_state(States.waiting_response)
+    data = await state.get_data()
+    request_id = data.get('request_id')
     try:
         if callback:
             username = callback.from_user.username
