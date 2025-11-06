@@ -124,24 +124,20 @@ class YMRequest:
             'date2': date2,
             'accuracy': 'full'
         }
-        print(parameters)
 
         async with self.semaphore:
             status = None
             message = None
             # 3 попытки получить данные с яндекс метрики
             for _ in range(3):
-                print('pop', _)
                 async with session.get(self.api_url, headers=self.headers, params=parameters) as response:
                     # если данные получены успешно
                     if response.status == 200:
-                        print('seccues')
                         stat = await response.json()
                         stat = stat.get('data')
                         status = None
                         message = None
                         break
-                    print('denied')
                     status = response.status
                     error = await response.json()
                     message = error.get('message')
@@ -204,8 +200,15 @@ class YMRequest:
                     stat = statistic()
                 return stat
             message = stat.json().get('message')
-        raise BadRequestError(
-            f'Не удалось получить итоговые данные от Яндекс Метрики.' \
-            f'\n\n error_message:{message}' \
-            '\n\nВозможное решение: уменьшите период формирования статистики или попробуйте позднее.'
-        )
+        if 'Quota exceeded for quantity of parallel user requests' in message:
+            raise BadRequestError(
+                f'Не удалось получить итоговые данные от Яндекс Метрики.' \
+                f'\n\n error_message:{message}' \
+                '\n\nПохоже, сейчас выполняется слишком много запросов к Яндекс Метрике. Попробуйте повторить запрос через пару минут.'
+            )
+        else:
+            raise BadRequestError(
+                f'Не удалось получить итоговые данные от Яндекс Метрики.' \
+                f'\n\n error_message:{message}' \
+                '\n\nВозможное решение: уменьшите период формирования статистики или попробуйте позднее.'
+            )

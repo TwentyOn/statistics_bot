@@ -89,15 +89,26 @@ class States(StatesGroup):
     waiting_response = State()
 
 
-async def check_user(user_tg_id):
+async def check_user(user_tg_id, user_message):
     """
     Проверка наличия доступа (пользователя) в БД
     :param user_tg_id: ID пользователя в телеграм
     :return: user_obj
     """
     async with async_session_maker() as session:
-        result = await session.execute(select(User).where(User.telegram_id == user_tg_id, User.active == True))
-    return result.scalar()
+        user = await session.execute(select(User).where(User.telegram_id == user_tg_id, User.active == True))
+        user = user.scalar()
+
+        # если пользователя нет в БД, не берем его запрос в обработку, иначе добавляем запрос в лог
+        if not bool(user):
+            err_msg = f'К сожалению, у вас нет доступа к этому боту. Пожалуйста, обратитесь к администратору @antoxaSV'
+            raise NotAccessUserError(err_msg)
+
+        request_id = await session.execute(insert(RequestsLog).values(
+            user_id=user.id, request=user_message, status='ok').returning(RequestsLog.id))
+        request_id = request_id.scalar_one()
+        await session.commit()
+    return request_id
 
 
 @dp.message(Command('start'))
@@ -135,20 +146,8 @@ async def get_message(message: Message, state: FSMContext):
     :param state:
     :return:
     """
+    request_id = await check_user(message.from_user.id, message.text)
     try:
-        user = await check_user(message.from_user.id)
-        # если пользователя нет в БД, не берем его запрос в обработку
-        if not bool(user):
-            err_msg = f'К сожалению, у вас нет доступа к этому боту. Пожалуйста, обратитесь к администратору @antoxaSV'
-            raise NotAccessUserError(err_msg)
-
-        # заносим запрос пользователя в лог запросов
-        async with async_session_maker() as session:
-            request_id = await session.execute(insert(RequestsLog).values(
-                user_id=user.id, request=message.text, status='ok').returning(RequestsLog.id))
-            request_id = request_id.scalar_one()
-            await session.commit()
-
         # обрабатываем полученные URL
         raw_processed_urls = await extract_urls_from_message(message.text)
 
