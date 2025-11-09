@@ -389,8 +389,8 @@ async def request_processing(raw_processed_urls, http_request_session: ClientSes
         await write_error_to_db(request_id, traceback.format_exc())
         await message.answer(
             'Ошибка выполнения запроса к Яндекс Метрике.' \
-            ' Пожалуйста, сверьте вводимые даты начала и окончания периода. Если вы не вводили даты вручную и (или)' \
-            ' проблема повторяется, пожалуйста, обратитесь к администратору @antoxaSV'
+            ' Вероятно, сервис сейчас перегружен. Пожалуйста попробуйте позднее.' \
+            ' Если проблема повторяется, пожалуйста, обратитесь к администратору @antoxaSV'
         )
     except Exception as err:
         await write_error_to_db(request_id, traceback.format_exc(), unexpected=True)
