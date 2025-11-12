@@ -30,6 +30,8 @@ from utils.load_file_to_minio import storage
 bot = Bot(token=tg_token)
 dp = Dispatcher()
 
+logging.basicConfig(level=logging.INFO, format='[{asctime}] #{levelname:4} {name}:{lineno} - {message}', style='{')
+logger = logging.getLogger('bot.main')
 
 class SessionManager:
     def __init__(self):
@@ -46,7 +48,7 @@ class SessionManager:
             self._active_requests += 1
             if self._session is None or self._session.closed:
                 self._session = aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit_per_host=5, limit=5))
-                print(f"Сессия создана. Активных запросов: {self._active_requests}")
+                logging.info(f'Сессия создана. Активных запросов: {self._active_requests}')
 
             # Отменяем задачу закрытия если она есть
             if self._close_task:
@@ -59,7 +61,7 @@ class SessionManager:
             # Уменьшаем счетчик и планируем закрытие
             async with self._lock:
                 self._active_requests -= 1
-                print(f"Активных запросов: {self._active_requests}")
+                logging.info(f'Активных запросов: {self._active_requests}')
 
                 if self._active_requests == 0 and self._session and not self._session.closed:
                     # Планируем закрытие через 5 секунд
@@ -73,7 +75,7 @@ class SessionManager:
                 if self._active_requests == 0 and self._session and not self._session.closed:
                     await self._session.close()
                     self._session = None
-                    print("Сессия закрыта (нет активных запросов)")
+                    logging.info(f'Сессия закрыта (нет активных запросов)')
         except asyncio.CancelledError:
             # Задача отменена - значит появились новые запросы
             pass

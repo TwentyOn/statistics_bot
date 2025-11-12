@@ -3,13 +3,13 @@ import datetime
 import re
 from datetime import timedelta
 from urllib.parse import urlparse
-from collections import namedtuple, deque
+from collections import namedtuple
+import logging
 
 import requests
 from sqlalchemy import select
-import time
 
-from database.db import async_session_maker, connection
+from database.db import async_session_maker
 from database.models import DomainCounter
 from utils.custom_exceptions import BadRequestError
 
@@ -17,6 +17,8 @@ from utils.custom_exceptions import BadRequestError
 statistic = namedtuple('Statistic', [
     'raw_url', 'visits', 'users', 'pageViews', 'pageDepth', 'visitDuration', 'bounceRate', 'newUsers'],
                        defaults=[0 for _ in range(8)])
+
+logger = logging.getLogger(__name__)
 
 
 class YMRequest:
@@ -101,8 +103,9 @@ class YMRequest:
             message = None
             # 4 попытки получить данные с яндекс метрики
             for _ in range(4):
+                acc = self.sampling[_]
                 # понижение точности с каждой попыткой
-                parameters['accuracy'] = self.sampling[_]
+                parameters['accuracy'] = acc
                 async with session.get(self.api_url, headers=self.headers, params=parameters) as response:
                     # если данные получены успешно
                     if response.status == 200:
@@ -114,6 +117,7 @@ class YMRequest:
                     status = response.status
                     error = await response.json()
                     message = error.get('message')
+                    logger.error(f'Ошибка получения данных для URL: {raw_url}; Точность: {acc}; Попытка: {_ + 1}; Ошибка: {status}:{message}')
             if status == 400:
                 raise BadRequestError(
                     f'Не удалось получить данные от API Яндекс Метрики. \n\n error_message: {message}. '
@@ -162,7 +166,8 @@ class YMRequest:
         # 4 попытки получить данные с яндекс метрики
         for _ in range(4):
             # понижение точности с каждой попыткой
-            parameters['accuracy'] = self.sampling[_]
+            acc = self.sampling[_]
+            parameters['accuracy'] = acc
             stat = requests.get(self.api_url, headers=self.headers, params=parameters)
             if stat.status_code == 200:
                 stat = stat.json().get('data')
@@ -176,6 +181,9 @@ class YMRequest:
                     stat = statistic()
                 return stat
             message = stat.json().get('message')
+            logger.error(
+                f'Ошибка получения суммы данных точность: {acc}; Попытка: {_ + 1}; Ошибка: {message}')
+
         if 'Quota exceeded for quantity of parallel user requests' in message:
             raise BadRequestError(
                 f'Не удалось получить итоговые данные от Яндекс Метрики.' \
