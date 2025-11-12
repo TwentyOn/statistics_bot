@@ -18,7 +18,7 @@ def xlsx_writter(statistics, filename: str, sum_stat, header):
             header,
             workbook.add_format({'bold': True, 'align': 'center', 'font_size': 14, 'border': 2, 'bg_color': '#B0E0E6'}))
         headers = [
-            '№', 'URL-адрес', 'Визитов', 'Посещений', 'Просмотров', 'Глубина просмотра', 'Время на сайте',
+            '№', 'URL-адрес', 'Количество визитов', 'Количество посещений', 'Количество просмотров', 'Глубина просмотра', 'Время на сайте',
             'Доля отказов',
             'Доля новых'
         ]
@@ -28,6 +28,7 @@ def xlsx_writter(statistics, filename: str, sum_stat, header):
 
         # форматы записи статистики в ячейки
         default_format = workbook.add_format({'border': 1, 'align': 'center'})
+        number_format = workbook.add_format({'num_format': '#,##0', 'align': 'center', 'border': 1})
         url_format = workbook.add_format({'border': 1, 'align': 'left'})
         time_format = workbook.add_format({'num_format': 'hh:mm:ss', 'align': 'center', 'border': 1})
         percent_format = workbook.add_format({'num_format': '0.00%', 'align': 'center', 'border': 1})
@@ -36,9 +37,9 @@ def xlsx_writter(statistics, filename: str, sum_stat, header):
         for row, row_stat in enumerate(statistics, start=2):
             worksheet.write(row, 0, row - 1, workbook.add_format({'border': 2, 'align': 'center'}))
             worksheet.write(row, 1, row_stat.raw_url, url_format)
-            worksheet.write(row, 2, row_stat.visits, default_format)
-            worksheet.write(row, 3, row_stat.users, default_format)
-            worksheet.write(row, 4, row_stat.pageViews, default_format)
+            worksheet.write(row, 2, row_stat.visits, number_format)
+            worksheet.write(row, 3, row_stat.users, number_format)
+            worksheet.write(row, 4, row_stat.pageViews, number_format)
             worksheet.write(row, 5, row_stat.pageDepth, default_format)
             worksheet.write(row, 6, row_stat.visitDuration, time_format)
             worksheet.write(row, 7, row_stat.bounceRate / 100, percent_format)
@@ -50,9 +51,9 @@ def xlsx_writter(statistics, filename: str, sum_stat, header):
         worksheet.merge_range(f'A{itog_row + 1}:B{itog_row + 1}', 'ИТОГО',
                               worksheet.workbook_add_format({'bold': True, 'align': 'center', 'border': 1}))
         worksheet.write(itog_row, 1, '', default_format)
-        worksheet.write(itog_row, 2, sum_stat.visits, default_format)
-        worksheet.write(itog_row, 3, sum_stat.users, default_format)
-        worksheet.write(itog_row, 4, sum_stat.pageViews, default_format)
+        worksheet.write(itog_row, 2, sum_stat.visits, number_format)
+        worksheet.write(itog_row, 3, sum_stat.users, number_format)
+        worksheet.write(itog_row, 4, sum_stat.pageViews, number_format)
         worksheet.write(itog_row, 5, sum_stat.pageDepth, default_format)
         worksheet.write(itog_row, 6, sum_stat.visitDuration, time_format)
         worksheet.write(itog_row, 7, sum_stat.bounceRate / 100, percent_format)
