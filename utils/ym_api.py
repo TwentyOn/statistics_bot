@@ -13,49 +13,10 @@ from database.db import async_session_maker, connection
 from database.models import DomainCounter
 from utils.custom_exceptions import BadRequestError
 
-# namedtuple (по-умолчанию все параметры=0)
+# namedtuple для хранения данных (по-умолчанию все параметры=0)
 statistic = namedtuple('Statistic', [
     'raw_url', 'visits', 'users', 'pageViews', 'pageDepth', 'visitDuration', 'bounceRate', 'newUsers'],
                        defaults=[0 for _ in range(8)])
-
-
-# class GlobalRateLimiter:
-#     _instance = None
-#     _lock = asyncio.Lock()
-#
-#     def __new__(cls):
-#         if cls._instance is None:
-#             cls._instance = super().__new__(cls)
-#             cls._instance.requests = deque()
-#             cls._instance.max_requests = 5  # 5 запросов в секунду
-#             cls._instance.period = 1  # 1 секунда
-#         return cls._instance
-#
-#     async def acquire(self):
-#         async with self._lock:
-#             current_time = time.time()
-#
-#             # Удаляем запросы старше 1 секунды
-#             while self.requests and self.requests[0] <= current_time - self.period:
-#                 self.requests.popleft()
-#
-#             # Если лимит превышен, ждем
-#             if len(self.requests) >= self.max_requests:
-#                 oldest_time = self.requests[0]
-#                 sleep_time = self.period - (current_time - oldest_time)
-#                 if sleep_time > 0:
-#                     await asyncio.sleep(sleep_time)
-#                     current_time = time.time()
-#                     # После сна снова очищаем старые запросы
-#                     while self.requests and self.requests[0] <= current_time - self.period:
-#                         self.requests.popleft()
-#
-#             # Добавляем текущий запрос
-#             self.requests.append(current_time)
-#
-#
-# # Глобальный экземпляр
-# global_limiter = GlobalRateLimiter()
 
 
 class YMRequest:
@@ -73,8 +34,14 @@ class YMRequest:
         self.headers = {'Authorization': self.token}
         # минимальная дата начала интервала сбора статистики
         self.min_date = datetime.date(2020, 1, 1)
+        self.sampling = ['full', 'high', 'medium', 'low']
 
     async def _get_counter(self, raw_url: str):
+        """
+        Получает один счётчик для raw_url
+        :param raw_url:
+        :return:
+        """
         # домен
         netloc = re.sub('www.', '', urlparse(raw_url).netloc)
         # сессия базы данных
@@ -90,6 +57,11 @@ class YMRequest:
         return counter
 
     async def _get_counters(self, raw_urls: list[str]):
+        """
+        Получает № счётчиков для всех переданных URL
+        :param raw_urls: список URL-ов
+        :return:
+        """
         # домены из сырых URL
         netlocs = map(lambda url: re.sub('www.', '', urlparse(url).netloc), raw_urls)
 
@@ -107,7 +79,6 @@ class YMRequest:
         return stat
 
     async def get_statistics(self, session, raw_url, cleaned_url, date1, date2):
-        # await global_limiter.acquire()
         counter_id = await self._get_counter(raw_url)
 
         # если дата начала периода < минимально установленого порога, берём дату установленного порога
@@ -128,8 +99,10 @@ class YMRequest:
         async with self.semaphore:
             status = None
             message = None
-            # 3 попытки получить данные с яндекс метрики
-            for _ in range(3):
+            # 4 попытки получить данные с яндекс метрики
+            for _ in range(4):
+                # понижение точности с каждой попыткой
+                parameters['accuracy'] = self.sampling[_]
                 async with session.get(self.api_url, headers=self.headers, params=parameters) as response:
                     # если данные получены успешно
                     if response.status == 200:
@@ -143,7 +116,8 @@ class YMRequest:
                     message = error.get('message')
             if status == 400:
                 raise BadRequestError(
-                    f'Не удалось получить данные от API Яндекс Метрики: {message}. Попробуйте повторить запрос.')
+                    f'Не удалось получить данные от API Яндекс Метрики. \n\n error_message: {message}. '
+                    f'\n\nВозможное решение: уменьшите период формирования статистики или попробуйте позднее.')
             elif status == 429:
                 raise BadRequestError(
                     f'Не удалось получить данные от API Яндекс Метрики: {message}. Попробуйте повторить запрос')
@@ -181,12 +155,14 @@ class YMRequest:
             'metrics': 'ym:s:visits,ym:s:users,ym:s:pageviews,ym:s:pageDepth,ym:s:avgVisitDurationSeconds,ym:s:bounceRate,ym:s:percentNewVisitors',
             'filters': filters,
             'date1': date1,
-            'date2': str(date2),
+            'date2': date2,
             'accuracy': 'full'
         }
         message = None
-        # 3 попытки получить данные с яндекс метрики
-        for _ in range(3):
+        # 4 попытки получить данные с яндекс метрики
+        for _ in range(4):
+            # понижение точности с каждой попыткой
+            parameters['accuracy'] = self.sampling[_]
             stat = requests.get(self.api_url, headers=self.headers, params=parameters)
             if stat.status_code == 200:
                 stat = stat.json().get('data')
@@ -203,7 +179,7 @@ class YMRequest:
         if 'Quota exceeded for quantity of parallel user requests' in message:
             raise BadRequestError(
                 f'Не удалось получить итоговые данные от Яндекс Метрики.' \
-                f'\n\n error_message:{message}' \
+                f'\n\nerror_message: {message}' \
                 '\n\nПохоже, сейчас выполняется слишком много запросов к Яндекс Метрике. Попробуйте повторить запрос через пару минут.'
             )
         else:
