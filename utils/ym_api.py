@@ -4,10 +4,12 @@ import re
 from datetime import timedelta
 from urllib.parse import urlparse
 from collections import namedtuple
+from _collections_abc import dict_keys, dict_values
 import logging
 
 import requests
 from sqlalchemy import select
+from aiohttp import ClientSession
 
 from database.db import async_session_maker
 from database.models import DomainCounter
@@ -38,11 +40,11 @@ class YMRequest:
         self.min_date = datetime.date(2020, 1, 1)
         self.sampling = ['full', 'high', 'medium', 'low']
 
-    async def _get_counter(self, raw_url: str):
+    async def _get_counter(self, raw_url: str) -> int:
         """
         Получает один счётчик для raw_url
         :param raw_url:
-        :return:
+        :return: № счётчика
         """
         # домен
         netloc = re.sub('www.', '', urlparse(raw_url).netloc)
@@ -58,7 +60,7 @@ class YMRequest:
             )
         return counter
 
-    async def _get_counters(self, raw_urls: list[str]):
+    async def _get_counters(self, raw_urls: list[str]) -> list:
         """
         Получает № счётчиков для всех переданных URL
         :param raw_urls: список URL-ов
@@ -73,14 +75,30 @@ class YMRequest:
             counters_dates = domain_counters_objects.scalars().all()
         return counters_dates
 
-    def statistic_placeholder(self, stat, raw_url=None):
+    def statistic_placeholder(self, stat: list, raw_url: str = None) -> statistic:
+        """
+        Функция для заполнения именованного кортежа данными, с приведением их к определенному формату
+        :param stat: список с данными
+        :param raw_url:
+        :return:
+        """
         stat = statistic(
             raw_url=raw_url, visits=int(stat[0]), users=int(stat[1]), pageViews=int(stat[2]),
             pageDepth=round(float(stat[3]), 2), visitDuration=timedelta(seconds=round(stat[4])),
             bounceRate=round(stat[5], 2), newUsers=round(stat[6], 2))
         return stat
 
-    async def get_statistics(self, session, raw_url, cleaned_url, date1, date2):
+    async def get_statistics(self, session: ClientSession, raw_url: str, cleaned_url: str, date1: str, date2: str):
+        """
+        Получает статистику по одному url. Извлекает из БД № счётчика для url -> форматирует даты для параметров
+        :param session:
+        :param raw_url:
+        :param cleaned_url:
+        :param date1:
+        :param date2:
+        :return:
+        """
+
         counter_id = await self._get_counter(raw_url)
 
         # если дата начала периода < минимально установленого порога, берём дату установленного порога
@@ -117,14 +135,15 @@ class YMRequest:
                     status = response.status
                     error = await response.json()
                     message = error.get('message')
-                    logger.error(f'Ошибка получения данных для URL: {raw_url}; Точность: {acc}; Попытка: {_ + 1}; Ошибка: {status}:{message}')
+                    logger.error(
+                        f'Ошибка получения данных для URL: {raw_url}; Точность: {acc}; Попытка: {_ + 1}; Ошибка: {status}:{message}')
             if status == 400:
                 raise BadRequestError(
                     f'Не удалось получить данные от API Яндекс Метрики. \n\n error_message: {message}. '
                     f'\n\nВозможное решение: уменьшите период формирования статистики или попробуйте позднее.')
             elif status == 429:
                 raise BadRequestError(
-                    f'Не удалось получить данные от API Яндекс Метрики: {message}. Попробуйте повторить запрос')
+                    f'Не удалось получить данные от API Яндекс Метрики: {message}. Попробуйте повторить запрос позднее.')
         if stat:
             # т.к группировки не используются всегда берём первый элемент из data
             stat = stat[0]['metrics']
@@ -133,12 +152,9 @@ class YMRequest:
         else:
             # иначе берем namedtuple по-умолчанию
             stat = statistic(raw_url=raw_url)
-        # new_progress_msg = f'Сбор статистики: {count}/{100} ({round((count / 100) * 100)} %) обработано...'
-        # if new_progress_msg != progress_msg:
-        #     await progress_msg.edit_text(new_progress_msg)
         return stat
 
-    async def get_sum_statistics(self, raw_urls, cleaned_urls, date1, date2):
+    async def get_sum_statistics(self, raw_urls: dict_keys, cleaned_urls: dict_values, date1: str, date2: str) -> statistic:
         """
         Метод для получения итоговой суммы статистики для всех полученных URL
         :param raw_urls:

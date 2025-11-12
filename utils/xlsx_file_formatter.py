@@ -1,13 +1,15 @@
 import io
-
 import xlsxwriter
+from utils.ym_api import statistic
 
 
-def xlsx_writter(statistics, filename: str, sum_stat, header):
+def xlsx_writter(statistics: statistic, filename: str, sum_stat: statistic, header: str):
     """
     Функция записывает данные статистики с excel-файл
     :param statistics: список с объектами statistic (namedtuple)
     :param filename: имя выходного файла
+    :param sum_stat:
+    :param header:
     :return: None
     """
     with io.BytesIO() as out_file_bytes:
@@ -18,7 +20,8 @@ def xlsx_writter(statistics, filename: str, sum_stat, header):
             header,
             workbook.add_format({'bold': True, 'align': 'center', 'font_size': 14, 'border': 2, 'bg_color': '#B0E0E6'}))
         headers = [
-            '№', 'URL-адрес', 'Количество визитов', 'Количество посещений', 'Количество просмотров', 'Глубина просмотра', 'Время на сайте',
+            '№', 'URL-адрес', 'Количество визитов', 'Количество посещений', 'Количество просмотров',
+            'Глубина просмотра', 'Время на сайте',
             'Доля отказов',
             'Доля новых'
         ]

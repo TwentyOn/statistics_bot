@@ -33,6 +33,7 @@ dp = Dispatcher()
 logging.basicConfig(level=logging.INFO, format='[{asctime}] #{levelname:4} {name}:{lineno} - {message}', style='{')
 logger = logging.getLogger('bot.main')
 
+
 class SessionManager:
     def __init__(self):
         self._session = None
@@ -329,8 +330,8 @@ async def other_message(message: Message):
                          '\n\nПример корректного URL: https://um.mos.ru/quizzes/kvest-kosmonavtiki/')
 
 
-async def request_processing(raw_processed_urls, http_request_session: ClientSession, header,
-                             date1=None, date2=None, callback: CallbackQuery = None,
+async def request_processing(raw_processed_urls: dict, http_request_session: ClientSession, header: str,
+                             date1: str = None, date2:str=None, callback: CallbackQuery = None,
                              message: Message = None, state: FSMContext = None):
     """
     Функция запускает сбор статистики для полученных URL-адресов в асинхронном режиме, формирует файл, отправляет файл
