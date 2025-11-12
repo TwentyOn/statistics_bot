@@ -46,7 +46,7 @@ class SessionManager:
             self._active_requests += 1
             if self._session is None or self._session.closed:
                 self._session = aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit_per_host=5, limit=5))
-                print(f"✅ Сессия создана. Активных запросов: {self._active_requests}")
+                print(f"Сессия создана. Активных запросов: {self._active_requests}")
 
             # Отменяем задачу закрытия если она есть
             if self._close_task:
@@ -59,7 +59,7 @@ class SessionManager:
             # Уменьшаем счетчик и планируем закрытие
             async with self._lock:
                 self._active_requests -= 1
-                print(f"📊 Активных запросов: {self._active_requests}")
+                print(f"Активных запросов: {self._active_requests}")
 
                 if self._active_requests == 0 and self._session and not self._session.closed:
                     # Планируем закрытие через 5 секунд
@@ -73,7 +73,7 @@ class SessionManager:
                 if self._active_requests == 0 and self._session and not self._session.closed:
                     await self._session.close()
                     self._session = None
-                    print("❌ Сессия закрыта (нет активных запросов)")
+                    print("Сессия закрыта (нет активных запросов)")
         except asyncio.CancelledError:
             # Задача отменена - значит появились новые запросы
             pass
