@@ -1,8 +1,4 @@
 from datetime import timedelta
-
-from settings import BUCKET_NAME, OUTER_ENDPOINT_URL, MINIO_SECURE
-
-from datetime import timedelta
 from io import BytesIO
 
 from settings import (
