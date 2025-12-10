@@ -74,7 +74,7 @@ def xlsx_writter(statistics: statistic, filename: str, sum_stat: statistic, head
             else:
                 worksheet.conditional_format(f'{cell}3:{cell}{itog_row}', {'type': '3_color_scale'})
 
-        # выравнивание ширины ячеек по контенту (макс ширина = 450 px)
+        # выравнивание ширины ячеек по контенту (макс ширина = 300 px)
         worksheet.autofit(300)
         worksheet.set_column(0, 0, 6)
         workbook.close()

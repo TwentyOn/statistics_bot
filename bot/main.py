@@ -367,12 +367,14 @@ async def request_processing(raw_processed_urls: dict, http_request_session: Cli
         result = await asyncio.gather(*tasks)
 
         filename = f"{username}_{datetime.datetime.today().strftime('%Y-%m-%d_%H-%M-%S')}.xlsx"
+        # путь в S3-хранилище
         s3_file_name = f'bot_tg_urls_stats/{filename}'
         await progress_msg.edit_text('Подвожу итоги...')
         sum_stat_for_url = await ym_request.get_sum_statistics(raw_processed_urls.keys(),
                                                                raw_processed_urls.values(), date1, date2)
         await progress_msg.edit_text('Формирую ответ...')
         file: bytes = xlsx_writter(result, filename, sum_stat_for_url, header)
+        # загрузка в S3-хранилище
         storage.upload_memory_file(file_name=s3_file_name, data=io.BytesIO(file), length=len(file))
 
         async with async_session_maker() as session:
